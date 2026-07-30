@@ -141,7 +141,7 @@ python main.py
 | Key | Action |
 |------|--------|
 | Home | Start/Stop Voice Recording |
-| Enter | Send Typed Message *(coming soon)* |
+| Enter | Send Typed Message |
 | Esc | Quit |
 
 ---
