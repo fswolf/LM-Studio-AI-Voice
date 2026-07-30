@@ -182,6 +182,7 @@ ai-voice/
 - Configurable memory
 - Cross-platform architecture
 - Rich terminal interface
+- Basic Reminder System
 
 ---
 
