@@ -146,6 +146,28 @@ python main.py
 
 ---
 
+# Reminders
+
+```
+The assistant supports natural language reminders.
+
+You can create reminders by simply talking normally:
+
+Example:
+
+> "Hey Luna, remind me in 10 minutes to clean the desk."
+
+The assistant will:
+
+1. Understand the reminder request.
+2. Extract the time duration.
+3. Extract the task.
+4. Schedule the reminder.
+5. Notify you when the reminder time is reached.
+```
+
+---
+
 # Project Structure
 
 ```text
