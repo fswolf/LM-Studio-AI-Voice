@@ -140,7 +140,7 @@ python main.py
 
 | Key | Action |
 |------|--------|
-| Home | Start/Stop Voice Recording |
+| Home | Start / Stop Voice Recording / Stop TTS |
 | Enter | Send Typed Message |
 | Esc | Quit |
 
