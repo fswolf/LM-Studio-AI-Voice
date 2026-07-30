@@ -1,15 +1,35 @@
 <img width="1210" height="1090" alt="Screenshot_20260730_153535" src="https://github.com/user-attachments/assets/d080fc10-626d-4796-a2e0-9a1589b2b36e" />
+# AI Voice Assistant
 
+A local AI voice assistant powered by:
 
-/////////////////////////////////////////////////////////////////////
-// REQUIRED
-/////////////////////////////////////////////////////////////////////
+- 🎤 Faster-Whisper (Speech-to-Text)
+- 🧠 LM Studio (Local LLM)
+- 🗣️ Kokoro TTS (Text-to-Speech)
+- 🎹 Global keyboard hotkeys
+- 💬 Rich terminal interface
 
-Python 3.12+
+Everything runs locally. No cloud APIs required.
+
+---
+
+# Requirements
+
+- Python 3.12+
+- LM Studio
+- A downloaded language model
+- LM Studio Local Server enabled
+
+---
+
+# Python Dependencies
+
+```text
 requests>=2.32.0
 numpy>=2.2.0
 scipy>=1.15.0
 sounddevice>=0.5.2
+silero-vad
 faster-whisper>=1.1.0
 ctranslate2>=4.6.0
 kokoro>=0.9.4
@@ -19,25 +39,18 @@ huggingface_hub>=0.34.0
 pynput>=1.8.1
 evdev>=1.9.2
 rich>=14.1.0
+wcwidth
+```
 
-/////////////////////////////////////////////////////////////////////
-// Enviroment
-/////////////////////////////////////////////////////////////////////
+Or simply install everything with:
 
-python3.12 -m venv ai-voice-venv
-source ai-voice-venv/bin/activate
-
-
-/////////////////////////////////////////////////////////////////////
-// PIP INSTALLS
-/////////////////////////////////////////////////////////////////////
-
+```bash
 pip install \
 requests \
 numpy \
 scipy \
 sounddevice \
-silero-vad \ 
+silero-vad \
 faster-whisper \
 ctranslate2 \
 kokoro \
@@ -46,29 +59,139 @@ torchaudio \
 huggingface_hub \
 pynput \
 evdev \
-rich \ 
+rich \
 wcwidth
+```
 
+---
 
-/////////////////////////////////////////////////////////////////////
-// Linux Dependancys
-/////////////////////////////////////////////////////////////////////
+# Create a Virtual Environment
 
-Debian:
+```bash
+python3.12 -m venv ai-voice-venv
+
+source ai-voice-venv/bin/activate
+```
+
+Upgrade pip:
+
+```bash
+pip install --upgrade pip
+```
+
+---
+
+# Linux Dependencies
+
+## Debian / Ubuntu
+
+```bash
 sudo apt install \
 python3-dev \
 build-essential \
 portaudio19-dev \
 ffmpeg
+```
 
-Fedora:
+## Fedora
+
+```bash
 sudo dnf install \
 ffmpeg \
 portaudio-devel \
 python3-devel \
 gcc
+```
 
-OSX:
-brew install portaudio 
+---
 
+# macOS Dependencies
 
+Install Homebrew if needed, then:
+
+```bash
+brew install portaudio ffmpeg
+```
+
+---
+
+# Running LM Studio
+
+1. Install LM Studio
+2. Download a model
+3. Start the Local Server
+4. Verify it is running on:
+
+```
+http://localhost:1234
+```
+
+---
+
+# Run the Assistant
+
+```bash
+python main.py
+```
+
+---
+
+# Controls
+
+| Key | Action |
+|------|--------|
+| Home | Start/Stop Voice Recording |
+| Enter | Send Typed Message *(coming soon)* |
+| Esc | Quit |
+
+---
+
+# Project Structure
+
+```text
+ai-voice/
+│
+├── main.py
+├── assistant.py
+├── speech.py
+├── llm.py
+├── config.py
+├── state.py
+├── ui.py
+│
+├── input/
+│   ├── __init__.py
+│   ├── linux_keyboard.py
+│   └── windows_keyboard.py
+│
+├── agent/
+│   ├── agent.json
+│   └── memory.json
+│
+└── README.md
+```
+
+---
+
+# Features
+
+- Local speech recognition
+- Local language model
+- Local text-to-speech
+- Configurable AI personality
+- Configurable memory
+- Cross-platform architecture
+- Rich terminal interface
+
+---
+
+# Planned Features
+
+- [ ] Web search
+- [ ] Tool calling
+
+---
+
+# License
+
+MIT License
