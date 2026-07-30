@@ -189,6 +189,7 @@ ai-voice/
 │   └── memory.json
 │
 ├── history/
+│   └── conversation.json
 │
 ├── input/
 │   ├── __init__.py
@@ -197,6 +198,7 @@ ai-voice/
 │   └── windows_keyboard.py
 │
 ├── reminders/
+│   └── reminders.json
 │
 └── README.md
 ```
