@@ -22,6 +22,14 @@ Everything runs locally. No cloud APIs required.
 
 ---
 
+# Create a Virtual Environment
+
+```bash
+python3.12 -m venv ai-voice-venv
+
+source ai-voice-venv/bin/activate
+```
+
 # Python Dependencies
 
 ```text
@@ -64,14 +72,6 @@ wcwidth
 ```
 
 ---
-
-# Create a Virtual Environment
-
-```bash
-python3.12 -m venv ai-voice-venv
-
-source ai-voice-venv/bin/activate
-```
 
 Upgrade pip:
 
