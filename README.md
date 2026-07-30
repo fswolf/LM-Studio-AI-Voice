@@ -173,23 +173,29 @@ The assistant will:
 ```text
 ai-voice/
 │
-├── main.py
 ├── assistant.py
-├── speech.py
-├── llm.py
 ├── config.py
+├── history.py
+├── llm.py
+├── longterm.py
+├── main.py
+├── reminders.py
+├── speech.py
 ├── state.py
 ├── ui.py
-│
-├── input/
-│   ├── __init__.py
-│   ├── linux_keyboard.py
-│   └── windows_keyboard.py
 │
 ├── agent/
 │   ├── agent.json
 │   └── memory.json
+│
 ├── history/
+│
+├── input/
+│   ├── __init__.py
+│   ├── linux_keyboard.py
+│   ├── mac_keyboard.py
+│   └── windows_keyboard.py
+│
 ├── reminders/
 │
 └── README.md
