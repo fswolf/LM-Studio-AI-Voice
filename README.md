@@ -167,6 +167,8 @@ ai-voice/
 ├── agent/
 │   ├── agent.json
 │   └── memory.json
+├── history/
+├── reminders/
 │
 └── README.md
 ```
