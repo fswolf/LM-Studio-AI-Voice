@@ -146,7 +146,7 @@ python main.py
 
 ---
 
-# Reminders
+# Reminders (Experemental)
 
 ```
 The assistant supports natural language reminders.
