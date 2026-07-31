@@ -2,6 +2,8 @@ import json
 import os
 import requests
 
+from datetime import datetime
+
 from config import LM_URL, MAX_RAW_MESSAGES, SUMMARIZE_CHUNK, BASE_DIR
 
 HISTORY_DIR = os.path.join(BASE_DIR, "history")
@@ -33,12 +35,30 @@ def get_summary() -> str:
 
 
 def get_messages() -> list:
-    """Recent raw messages, oldest first, as {"role","content"} dicts."""
+    """Recent raw messages, oldest first, as {"role","content"} dicts.
+
+    Timestamps are stripped here since this is what gets sent straight
+    to the model's API - use get_messages_full() if you need them.
+    """
+    return [
+        {"role": m["role"], "content": m["content"]}
+        for m in _data.get("messages", [])
+    ]
+
+
+def get_messages_full() -> list:
+    """Same as get_messages(), but keeps the "timestamp" field on each
+    message - use this for display purposes (e.g. showing timestamps
+    in the UI) rather than feeding it to the model."""
     return list(_data.get("messages", []))
 
 
 def add_message(role: str, content: str):
-    _data.setdefault("messages", []).append({"role": role, "content": content})
+    _data.setdefault("messages", []).append({
+        "role": role,
+        "content": content,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+    })
 
 
 def _summarize_with_model(model, chunk):
