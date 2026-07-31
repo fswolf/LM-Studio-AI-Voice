@@ -1,18 +1,3 @@
-"""
-history.py
-
-Persists conversation history to history/conversation.json so the
-assistant remembers past turns across restarts, and keeps that history
-from growing forever by periodically asking the model to fold older
-turns into a running summary.
-
-Storage shape:
-{
-    "summary": "condensed notes about older parts of the conversation",
-    "messages": [{"role": "user"/"assistant", "content": "..."}, ...]
-}
-"""
-
 import json
 import os
 import requests
