@@ -1,20 +1,3 @@
-"""
-longterm.py
-
-Long-term memory, distinct from history.py's rolling short-term
-context. After each exchange, asks the model itself whether anything
-worth remembering permanently came up (a preference, a project detail,
-a decision) and if so, saves it into agent/memory.json under
-"long_term_facts" so it survives even after history's summary fades.
-
-This runs as a background thread so it doesn't block the reply the
-user is waiting on - but note it still costs an extra model request
-every turn. If your local model server (e.g. LM Studio) only serves
-one request at a time, this can still delay your *next* message while
-it's finishing up, even though it's non-blocking here in Python.
-Disable via agent.json -> "long_term_memory": {"enabled": false}.
-"""
-
 import json
 import os
 import threading
