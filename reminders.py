@@ -1,37 +1,3 @@
-"""
-reminders.py
-
-Lets you say things like "remind me in 20 minutes to check the oven"
-in natural language, no slash command needed.
-
-How it works:
-1. A cheap keyword check ("remind" in the message) decides whether
-   it's even worth asking the model about - this avoids adding an
-   extra model call on every single ordinary message, only ones that
-   look reminder-ish.
-2. If it passes, a background thread asks the model to extract strict
-   JSON: {"amount": 5, "unit": "hours", "text": "check the oven"}. The
-   model only reports what was literally said - it never does any
-   math. Python turns that into an absolute due-time and saves it to
-   reminders.json.
-3. A separate background thread scans that file every
-   REMINDER_CHECK_INTERVAL_SECONDS. When something's due, it's fed
-   back through the model as a normal turn, so it gets spoken and
-   shown in the conversation just like anything else.
-
-Known limitations, worth knowing:
-- The keyword gate is just "remind" (case-insensitive) - phrasing like
-  "don't forget to..." without that word won't trigger extraction.
-- Only relative durations are supported ("in 20 minutes", "in 5
-  hours") - absolute times like "at 5pm" or "tomorrow morning" aren't
-  handled.
-- Delivery precision is bounded by the scan interval (default 10 min),
-  so a reminder can fire up to that long after its exact due time.
-- If a reminder fires while you're mid-conversation, it isn't
-  coordinated with that - it'll just call ask()/speak() as a separate
-  turn, which could overlap with what's already happening.
-"""
-
 import json
 import os
 import threading
