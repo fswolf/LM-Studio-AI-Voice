@@ -3,7 +3,13 @@ import os
 import threading
 import requests
 
-from config import memory, LM_URL, LONG_TERM_MEMORY_ENABLED, BASE_DIR
+from config import (
+    memory,
+    LM_URL,
+    LONG_TERM_MEMORY_ENABLED,
+    LONG_TERM_MEMORY_MAX_FACTS,
+    BASE_DIR,
+)
 
 MEMORY_FILE = os.path.join(BASE_DIR, "agent", "memory.json")
 
@@ -30,15 +36,36 @@ def add_fact(fact: str):
         facts = memory.setdefault("long_term_facts", [])
         if fact not in facts:  # simple exact-match de-dupe
             facts.append(fact)
+        # Cap the list so it can't grow forever - drop the oldest
+        # entries first once we're over the limit.
+        overflow = len(facts) - LONG_TERM_MEMORY_MAX_FACTS
+        if overflow > 0:
+            del facts[:overflow]
     save()
 
 
 def _extract_fact(model, user_text, answer):
+    existing = get_facts()
+    existing_block = ""
+    if existing:
+        existing_block = (
+            "Facts already remembered (do NOT log anything that repeats "
+            "or reworders any of these):\n"
+            + "\n".join(f"- {f}" for f in existing[-25:])
+            + "\n\n"
+        )
+
     prompt = (
-        "Based on this exchange, is there ONE important fact about the "
-        "user, their preferences, or an ongoing project worth remembering "
-        "permanently? Reply with ONLY that single fact as one short "
-        "sentence, or reply with exactly NONE if nothing stands out.\n\n"
+        "You are deciding whether to permanently remember something from "
+        "this exchange. Be strict - most exchanges contain nothing worth "
+        "permanently remembering. Only report a fact if it is durable and "
+        "specific (identity, an explicitly stated preference, a concrete "
+        "standing project or commitment) - NOT routine chit-chat, and NOT "
+        "already covered by the existing facts below in different words.\n\n"
+        f"{existing_block}"
+        "If this exchange contains a genuinely new, specific, durable "
+        "fact, reply with ONLY that fact as one short sentence. Otherwise "
+        "reply with exactly NONE. When in doubt, reply NONE.\n\n"
         f"User: {user_text}\nAssistant: {answer}"
     )
     try:
