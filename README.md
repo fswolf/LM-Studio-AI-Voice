@@ -232,14 +232,8 @@ ai-voice/
 - Cross-platform architecture
 - Rich terminal interface
 - Basic Reminder System
-
----
-
-# Planned Features
-
-- [ ] Web search
-- [ ] Tool calling
-
+- Experimental Basic Web Searching
+  
 ---
 
 # License
