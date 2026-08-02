@@ -51,7 +51,7 @@ wcwidth>=0.8.2
 ddgs>=9.14.4
 ```
 
-Or simply install everything with:
+Install dependencies:
 
 ```bash
 pip install \
