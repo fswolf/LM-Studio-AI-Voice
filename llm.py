@@ -8,6 +8,7 @@ from config import memory
 import history
 import longterm
 import reminders
+import websearch
 
 
 def build_memory_prompt():
@@ -98,6 +99,11 @@ def ask(text, model):
     # not just how old the newest message is.
     for m in history.get_messages_full():
         messages.append(_timestamped(m["role"], m["content"], m.get("timestamp", "unknown time")))
+
+    if websearch.looks_like_search(text):
+        query = websearch.extract_query(text)
+        results = websearch.search(query)
+        messages.append({"role": "system", "content": websearch.format_results(query, results)})
 
     messages.append(_timestamped("user", text, now_str))
 
