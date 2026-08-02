@@ -120,27 +120,45 @@ def _pop_due():
 
 def run_scanner(model):
     """
-    Background loop: every REMINDER_CHECK_INTERVAL_SECONDS, check for
-    due reminders and, if any, prompt the model to bring them up
-    naturally, then speak + show the result like a normal turn.
+    Background loop: on start, loads reminders.json (so anything saved
+    from a previous session isn't lost/ignored) and immediately checks
+    for reminders that are already due - e.g. one that came due while
+    the app was closed. After that, it checks again every
+    REMINDER_CHECK_INTERVAL_SECONDS.
+
+    Each due reminder is processed inside its own try/except - a
+    single failure (LM Studio error, context overflow, TTS hiccup,
+    etc.) gets logged and skipped rather than raising out of the loop.
+    Without this, one bad reminder would kill this entire background
+    thread silently - no more reminders would ever fire for the rest
+    of the session, with nothing on screen indicating why.
     """
     import ui
     from speech import speak
     import llm
 
-    while True:
-        time.sleep(REMINDER_CHECK_INTERVAL_SECONDS)
-        if not REMINDERS_ENABLED:
-            continue
+    load()  # pick up whatever was saved from the last session
+    if _reminders:
+        print(f"[reminders] Loaded {len(_reminders)} pending reminder(s) from {REMINDERS_FILE}")
+    else:
+        print("[reminders] No pending reminders.")
 
-        for r in _pop_due():
-            ui.set_status("Reminder due...")
-            trigger_text = (
-                f'(This is a reminder you set earlier: "{r["text"]}". '
-                "Bring it up now, naturally, in your own voice.)"
-            )
-            answer = llm.ask(trigger_text, model)
-            ui.add_message(AGENT_NAME.lower(), answer)
-            ui.set_status("Speaking...")
-            speak(answer)
-            ui.set_status("Idle")
+    while True:
+        if REMINDERS_ENABLED:
+            for r in _pop_due():
+                try:
+                    ui.set_status("Reminder due...")
+                    trigger_text = (
+                        f'(This is a reminder you set earlier: "{r["text"]}". '
+                        "Bring it up now, naturally, in your own voice.)"
+                    )
+                    answer = llm.ask(trigger_text, model)
+                    ui.add_message(AGENT_NAME.lower(), answer)
+                    ui.set_status("Speaking...")
+                    speak(answer)
+                    ui.set_status("Idle")
+                except Exception as e:
+                    print(f"[reminders] Failed to deliver reminder {r!r}: {e}")
+                    ui.set_status(f"Reminder failed: {e}")
+
+        time.sleep(REMINDER_CHECK_INTERVAL_SECONDS)

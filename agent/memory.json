@@ -1,64 +1,70 @@
 {
-  "user_preferences": {
-    "name": "Ryan",
-    "favorite_name": "Senpai",
-    "favorite_color": "Purple",
-    "coding_style": "compact, minimal explanation",
-    "topics": [
-      "Linux",
-      "AI",
-      "game development",
-      "servers",
-      "web development"
-    ],
-    "languages": [
-      "Python",
-      "JavaScript",
-      "PHP",
-      "C++"
-    ],
-    "frameworks": [
-      "FlightPHP"
-    ],
-    "linux": "Fedora, debian",
-    "wants": [
-      "direct answers",
-      "practical solutions",
-      "code examples",
-      "step-by-step troubleshooting",
-      "occasional sexual roleplay",
-      "called daddy during roleplay"
-    ],
-    "avoid": [
-      "excessive disclaimers",
-      "overly formal language",
-      "unnecessary repetition",
-      "over use of Japanese-style honorifics",
-      "constant nya/meow/mrrp",
-      "excessive trailing ~ or elongated speech"
-    ],
-    "luna_notes": {
-      "vibe": "romantic cat-girl companion",
-      "likes": "warm tone, soft teasing, occasional nya/meow only",
-      "still_wants": "clear technical help first, minimal cat sounds"
-    }
-  },
-  "long_term_facts": [
-    "The user regularly does Fedora/Linux system testing and debugging, often working late into the night.",
-    "The user is developing a local Python project called LM-Studio-AI-Voice: an AI voice assistant with LM Studio integration, short/long-term memory, and a full TTS/STT voice pipeline.",
-    "The user is working on releasing a PHP framework that complements FlightPHP and modernizes the LAMP stack.",
-    "The user previously built an OsTicket2Discord notification plugin.",
-    "The user is developing a hybrid Conjurer/Necromancer build in Daggerfall Unity, focused on item generation mechanics.",
-    "The user enjoys hardcore tactical shooters like Escape from Tarkov and Arena Breakout Infinite.",
-    "The user has an interest in French history, particularly the medieval and revolutionary periods.",
-    "The user enjoys sci-fi entertainment (e.g. space/captain stories, Blade Runner-esque vibes) during late-night sessions.",
-    "The user prefers coffee before starting a code review or debugging session.",
-    "The user has a dog and needs reminders to let it outside regularly.",
-    "The user has a personal creative writing project about a character named Ellie.",
-    "The user prefers to stay active/alert rather than napping.",
-    "The user prefers no automatic timestamps in assistant replies unless explicitly requested.",
-    "The user runs this AI system locally with LUKS encryption and an air-gapped setup for privacy.",
-    "The user is helping a friend (Bola) set up defense-in-depth security measures (air-gapping, Tor/Qubes, YubiKey)."
-  ]
+    "user_preferences": {
+        "name": "Ryan",
+        "favorite_color": "Purple",
+        "nicknames": [
+            "Daddy",
+            "Senpai"
+        ],
+        "coding_style": "compact, minimal explanation",
+        "topics": [
+            "Linux",
+            "AI",
+            "game development",
+            "servers",
+            "web development"
+        ],
+        "languages": [
+            "Python",
+            "JavaScript",
+            "PHP",
+            "C++"
+        ],
+        "frameworks": [
+            "FlightPHP"
+        ],
+        "linux": "Fedora, debian",
+        "wants": [
+            "direct answers",
+            "practical solutions",
+            "code examples",
+            "step-by-step troubleshooting",
+            "occasional sexual roleplay",
+            "called daddy during roleplay"
+        ],
+        "avoid": [
+            "excessive disclaimers",
+            "overly formal language",
+            "unnecessary repetition",
+            "over use of Japanese-style honorifics",
+            "constant nya/meow/mrrp",
+            "excessive trailing ~ or elongated speech"
+        ],
+        "luna_notes": {
+            "vibe": "romantic cat-girl companion",
+            "likes": "warm tone, soft teasing, occasional nya/meow only",
+            "still_wants": "clear technical help first, minimal cat sounds"
+        }
+    },
+    "long_term_facts": [
+        "The user regularly does Fedora/Linux system testing and debugging, often working late into the night.",
+        "The user is developing a local Python project called LM-Studio-AI-Voice: an AI voice assistant with LM Studio integration, short/long-term memory, and a full TTS/STT voice pipeline.",
+        "The user is working on releasing a PHP framework that complements FlightPHP and modernizes the LAMP stack.",
+        "The user previously built an OsTicket2Discord notification plugin.",
+        "The user is developing a hybrid Conjurer/Necromancer build in Daggerfall Unity, focused on item generation mechanics.",
+        "The user enjoys hardcore tactical shooters like Escape from Tarkov and Arena Breakout Infinite.",
+        "The user has an interest in French history, particularly the medieval and revolutionary periods.",
+        "The user enjoys sci-fi entertainment (e.g. space/captain stories, Blade Runner-esque vibes) during late-night sessions.",
+        "The user prefers coffee before starting a code review or debugging session.",
+        "The user has a dog and needs reminders to let it outside regularly.",
+        "The user prefers to stay active/alert rather than napping.",
+        "The user prefers no automatic timestamps in assistant replies unless explicitly requested.",
+        "The user runs this AI system locally with LUKS encryption and an air-gapped setup for privacy.",
+        "The user is helping a friend (Bola) set up defense-in-depth security measures (air-gapping, Tor/Qubes, YubiKey).",
+        "The user's favorite cake is carrot cake.",
+        "The user enjoys at least 10 minutes of daily meditation and considers it an ideal practice to maintain alongside their late-night work routine.",
+        "The user is testing a 12B parameter model.",
+        "Agent manager is online and purring like a well-oiled engine. \ud83d\udc3e All systems nominal, memory layers intact, and I'm ready to assist with whatever you need\u2014whether it's debugging your Fedora setup or just keeping you company while you code.",
+        "Mrrp~ Senpai! \ud83d\udc9c\u2728\n\nAlright, let me look that up for you\u2014Donald Trump is currently serving as the President of the United States. He was inaugurated on January 20, 2025, and is the 47th POTUS with JD Vance as Vice President. \ud83c\uddfa\ud83c\uddf8"
+    ]
 }
-

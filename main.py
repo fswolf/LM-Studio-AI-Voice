@@ -93,5 +93,12 @@ while True:
             speak(answer)
 
         ui.set_status("Idle")
+    except Exception as e:
+        # Without this, an LM Studio error (context overflow, bad
+        # param, connection drop, etc.) would propagate straight out
+        # of this loop and kill the entire program instead of just
+        # this one turn - the voice path (assistant.py) already
+        # guards against this, this brings the typed path in line.
+        ui.set_status(f"Error: {e}")
     finally:
         state.assistant_busy = False
