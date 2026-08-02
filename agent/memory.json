@@ -6,24 +6,6 @@
             "Daddy",
             "Senpai"
         ],
-        "coding_style": "compact, minimal explanation",
-        "topics": [
-            "Linux",
-            "AI",
-            "game development",
-            "servers",
-            "web development"
-        ],
-        "languages": [
-            "Python",
-            "JavaScript",
-            "PHP",
-            "C++"
-        ],
-        "frameworks": [
-            "FlightPHP"
-        ],
-        "linux": "Fedora, debian",
         "wants": [
             "direct answers",
             "practical solutions",
@@ -62,6 +44,7 @@
         "The user runs this AI system locally with LUKS encryption and an air-gapped setup for privacy.",
         "The user is helping a friend (Bola) set up defense-in-depth security measures (air-gapping, Tor/Qubes, YubiKey).",
         "The user's favorite cake is carrot cake.",
-        "The user enjoys at least 10 minutes of daily meditation and considers it an ideal practice to maintain alongside their late-night work routine."
+        "The user enjoys at least 10 minutes of daily meditation and considers it an ideal practice to maintain alongside their late-night work routine.",
+        "The user owns two mini vans, one of which is currently non-functional due to transmission failure."
     ]
 }
