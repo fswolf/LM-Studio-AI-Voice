@@ -25,3 +25,7 @@ LONG_TERM_MEMORY_MAX_FACTS = agent.get("long_term_memory", {}).get("max_facts", 
 _reminders_cfg = agent.get("reminders", {})
 REMINDERS_ENABLED = _reminders_cfg.get("enabled", True)
 REMINDER_CHECK_INTERVAL_SECONDS = _reminders_cfg.get("check_interval_minutes", 10) * 60
+
+_web_search_cfg = agent.get("web_search", {})
+WEB_SEARCH_ENABLED = _web_search_cfg.get("enabled", True)
+WEB_SEARCH_MAX_RESULTS = _web_search_cfg.get("max_results", 5)
