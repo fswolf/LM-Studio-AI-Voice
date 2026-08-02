@@ -148,7 +148,7 @@ python main.py
 
 ---
 
-# Reminders (Experemental)
+# Reminders (Experimental)
 
 ```
 The assistant supports natural language reminders.
@@ -169,7 +169,7 @@ The assistant will:
 ```
 ---
 
-# Web Search (Experemental)
+# Web Search (Experimental)
 
 ```
 How it works:
@@ -178,11 +178,8 @@ How it works:
 2. If it passes, the text after the trigger phrase becomes the
    search query and gets run through DuckDuckGo via the `ddgs`
    package - no API key needed.
-3. Results are formatted into a compact block and added as an extra
-   system-role message for *this turn only*. The user's original
-   text is still what gets saved to history via history.add_message()
-   in llm.py, so raw search results never pollute the permanent
-   conversation log or get repeatedly re-sent on every future turn.
+
+This is very experimental and does not work well. 
 ```
 
 ---
