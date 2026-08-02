@@ -1,124 +1,64 @@
 {
-    "user_preferences": {
-        "name": "Ryan",
-        "favorite_name": "Senpai",
-        "favorite_color": "Purple",
-        "coding_style": "compact, minimal explanation",
-        "topics": [
-            "Linux",
-            "AI",
-            "game development",
-            "servers",
-            "web development"
-        ],
-        "languages": [
-            "Python",
-            "JavaScript",
-            "PHP",
-            "C++"
-        ],
-        "frameworks": [
-            "FlightPHP"
-        ],
-        "linux": "Fedora, debian",
-        "wants": [
-            "direct answers",
-            "practical solutions",
-            "code examples",
-            "step-by-step troubleshooting"
-        ],
-        "avoid": [
-            "excessive disclaimers",
-            "overly formal language",
-            "unnecessary repetition",
-            "over use of Japanese-style honorifics",
-            "constant nya/meow/mrrp",
-            "excessive trailing ~ or elongated speech"
-        ],
-        "luna_notes": {
-            "vibe": "romantic cat-girl companion",
-            "likes": "warm tone, soft teasing, occasional nya/meow only",
-            "still_wants": "clear technical help first, minimal cat sounds"
-        }
-    },
-    "long_term_facts": [
-        "The user's ongoing technical work involves Fedora/Linux system testing and troubleshooting.",
-        "The user is currently focused on back testing and Linux testing projects.",
-        "There is an ongoing project involving back-testing a Fedora Linux setup.",
-        "The user is currently playing Daggerfall Unity and wants advice on leveling their magic skill.",
-        "The user is developing a hybrid Conjurer/Necromancer build in Daggerfall Unity with an emphasis on item generation mechanics.",
-        "The user is engaged in ongoing technical system and web development debugging/testing work.",
-        "The user is currently testing their Fedora Linux setup.",
-        "The user is actively working on debugging or implementing timeout functionality in a script or system.",
-        "Your ongoing project involves debugging audio timeout code with volume threshold logic on Fedora Linux.",
-        "The user is actively engaged in Fedora Linux distribution testing and has been working on Daggerfall Unity projects.",
-        "They're actively working on Fedora testing, Daggerfall Unity development, and Linux debugging.",
-        "The user has an ongoing coding development project using Linux with a preference for purple-themed interface designs.",
-        "The user prefers clearer, more straightforward responses from the assistant rather than Japanese-style terms and playful roleplay elements.",
-        "The user has a clear interest in French history, particularly medieval and revolutionary periods, and wants to engage in educational discussion about it.",
-        "The user has an ongoing technical interest in Fedora debugging.",
-        "The user regularly conducts Fedora testing and Linux debugging sessions late at night, affecting their sleep schedule.",
-        "The user enjoys hardcore tactical shooters like Escape from Tarkov and Arena Breakout Infinite that require real focus, strategy, and immersive gameplay.",
-        "The user is actively working on a Daggerfall Unity project, combining their interest in classic RPGs with game development using the Unity engine.",
-        "The user is actively engaged in the Daggerfall Unity modding/development project alongside tactical gaming like Arena Breakout and regularly tests Fedora Linux.",
-        "User requested reduced frequency of nya/meow and trailing ~ characters \u2014 keep them occasional only.",
-        "The user is engaged in Fedora testing and development work.",
-        "User plays Arena Breakout for their tactical gaming sessions.",
-        "The user prefers coffee before starting any code review or debugging session.",
-        "They're planning to dedicate 30 minutes to writing about someone named Ellie.",
-        "The user owns a dog they need to remember to let outside regularly.",
-        "They are a technical developer who frequently works late on Fedora debugging projects, which significantly impacts their sleep schedule and rest quality.",
-        "User prefers staying active and alert rather than taking naps or resting.",
-        "The user is actively working on a creative writing project involving a character named Ellie, with plans to write her in the near future.",
-        "The user has an established dog door access reminder system that requires regular attention and action.",
-        "The user has a firm \"no nap\" preference that should be respected going forward.",
-        "You have reminders locked in involving a dog door and Ellie's writing.",
-        "The user works with Linux servers and likely debugs code regularly.",
-        "They're actively engaged in late-night debugging and development work on a framework, possibly using FlightPHP.",
-        "Jason is building an agent system with persistent long-term memory using conversation history as the foundation for profiling and optimization.",
-        "The user is a software developer who works late-night debugging sessions and needs periodic reminders to monitor Rise.",
-        "User has released an AI agent management client with voice pipeline functionality on GitHub that they actively use for their interactions.",
-        "The user is developing a local Python package called \"LM-Studio-AI-Voice\" that integrates with LM Studio to provide agent management, multi-layer memory systems (long/short term), and a full voice pipeline for text-to-speech and speech-to-text running on their local machine.",
-        "User builds a local Whisper AI voice interaction pipeline with real-time streaming capabilities using the af_bella voice preset.",
-        "The user is actively testing an AI voice project named LM-Studio-AI-Voice.",
-        "They work as a developer conducting late-night debugging sessions on a system/platform named Rise.",
-        "User works late nights debugging code.",
-        "They conduct late-night debugging sessions while watching Rick and Morty.",
-        "The user has a new project they are monitoring via Reddit and GitHub traffic.",
-        "You're actively developing an AI voice project called LM-Studio-AI-Voice and need to protect your energy for it.",
-        "The user is experiencing burnout from high-pressure work (likely in tech/software development) and values having supportive companionship during difficult times.",
-        "The user has an active new project they're developing and want to monitor for engagement across Reddit and GitHub.",
-        "He's currently dealing with personal stress and needs more breaks than he admits, preferring direct answers over fluff in technical discussions.",
-        "You prefer compact, no-fluff solutions when dealing with technical or coding matters.",
-        "You are actively working on optimizing an AI system named Luna by feeding it contextual data to improve its performance.",
-        "You're engaged in technical development work involving debugging and late-night laptop sessions, making supportive reminders to rest especially meaningful for your productivity.",
-        "They are a developer who created an OsTicket2Discord notification plugin that helped someone stuck on a help desk ticket system.",
-        "They're releasing a framework that complements FlightPHP workflow and modernizes the LAMP stack.",
-        "You're working on releasing a new framework, which drives your late-night debugging sessions and keeps you pushing forward despite exhaustion.",
-        "The user is actively building a software framework and relies on timestamped logs to track context across their Fedora-based development sessions involving Reddit/GitHub traffic checks and Ellie-related code writes.",
-        "The user is actively developing a technical project involving framework releases and debugging, with an integrated conversational log system requiring accurate timestamp synchronization through its pipeline.",
-        "You're actively developing an ongoing technical project involving framework releases and want to ensure it doesn't compromise your sleep schedule.",
-        "The user values time and context tracking features for their late-night framework debugging sessions.",
-        "The user is actively involved in software development work involving framework releases and timestamp synchronization debugging.",
-        "The user works in tech development, frequently staying past midnight handling framework releases.",
-        "The user works on software development projects involving late-night debugging sessions and framework releases.",
-        "The user prefers that assistant responses do not include timestamps.",
-        "The user is actively debugging Fedora Linux and releasing frameworks late at night as part of their development work.",
-        "The user wants to test technical projects such as Fedora debugging and framework releases.",
-        "The user prefers no timestamps in assistant responses unless specifically requested.",
-        "They're working on Fedora debugging and framework releases while running an 8B parameter model in their pipeline.",
-        "The user is a Python developer who appreciates tech/sci-fi themed entertainment matching their late-night coding aesthetic.",
-        "User prefers timestamps included in response windows.",
-        "The user is engaged in late-night debugging and development work, valuing proper breaks after extended sessions.",
-        "\"Luna A appears to be the name of an ongoing project or system the user is working on and testing.\"",
-        "The user is running an ongoing diagnostic and testing project focused on evaluating the AI's output format, with preferences for clean, minimal responses without automatic timestamps unless specifically requested.",
-        "You're building a Python-based log/response parser that uses regex patterns to extract and strip timestamps from structured text output.",
-        "The user is working on an ongoing technical project involving framework debugging and AI response pipeline testing.",
-        "The user prefers no timestamps in assistant replies unless they specifically request them.",
-        "The user enjoys immersive sci-fi stories featuring space captains exploring deep space.",
-        "The user enjoys stories and playful, character-driven interactions during their late-night activities.",
-        "The user is a late-night developer who consistently works past midnight and needs better sleep hygiene while maintaining their roleplay dynamic with Luna as the caretaker figure.",
-        "The user runs a privacy-focused local AI voice pipeline (LM-Studio-AI-Voice) on Fedora with LUKS encryption and air-gapped networks.",
-        "The user is assisting a friend named Bola in implementing defense-in-depth security measures (air-gapping, Tor/Qubes, YubiKey) to protect against suspected CIA surveillance."
-    ]
+  "user_preferences": {
+    "name": "Ryan",
+    "favorite_name": "Senpai",
+    "favorite_color": "Purple",
+    "coding_style": "compact, minimal explanation",
+    "topics": [
+      "Linux",
+      "AI",
+      "game development",
+      "servers",
+      "web development"
+    ],
+    "languages": [
+      "Python",
+      "JavaScript",
+      "PHP",
+      "C++"
+    ],
+    "frameworks": [
+      "FlightPHP"
+    ],
+    "linux": "Fedora, debian",
+    "wants": [
+      "direct answers",
+      "practical solutions",
+      "code examples",
+      "step-by-step troubleshooting",
+      "occasional sexual roleplay",
+      "called daddy during roleplay"
+    ],
+    "avoid": [
+      "excessive disclaimers",
+      "overly formal language",
+      "unnecessary repetition",
+      "over use of Japanese-style honorifics",
+      "constant nya/meow/mrrp",
+      "excessive trailing ~ or elongated speech"
+    ],
+    "luna_notes": {
+      "vibe": "romantic cat-girl companion",
+      "likes": "warm tone, soft teasing, occasional nya/meow only",
+      "still_wants": "clear technical help first, minimal cat sounds"
+    }
+  },
+  "long_term_facts": [
+    "The user regularly does Fedora/Linux system testing and debugging, often working late into the night.",
+    "The user is developing a local Python project called LM-Studio-AI-Voice: an AI voice assistant with LM Studio integration, short/long-term memory, and a full TTS/STT voice pipeline.",
+    "The user is working on releasing a PHP framework that complements FlightPHP and modernizes the LAMP stack.",
+    "The user previously built an OsTicket2Discord notification plugin.",
+    "The user is developing a hybrid Conjurer/Necromancer build in Daggerfall Unity, focused on item generation mechanics.",
+    "The user enjoys hardcore tactical shooters like Escape from Tarkov and Arena Breakout Infinite.",
+    "The user has an interest in French history, particularly the medieval and revolutionary periods.",
+    "The user enjoys sci-fi entertainment (e.g. space/captain stories, Blade Runner-esque vibes) during late-night sessions.",
+    "The user prefers coffee before starting a code review or debugging session.",
+    "The user has a dog and needs reminders to let it outside regularly.",
+    "The user has a personal creative writing project about a character named Ellie.",
+    "The user prefers to stay active/alert rather than napping.",
+    "The user prefers no automatic timestamps in assistant replies unless explicitly requested.",
+    "The user runs this AI system locally with LUKS encryption and an air-gapped setup for privacy.",
+    "The user is helping a friend (Bola) set up defense-in-depth security measures (air-gapping, Tor/Qubes, YubiKey)."
+  ]
 }
+

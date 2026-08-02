@@ -24,7 +24,16 @@ ui.set_status("Starting...")
 history.load()
 reminders.load()
 
-models = requests.get("http://localhost:1234/v1/models").json()
+try:
+    models = requests.get("http://localhost:1234/v1/models", timeout=5).json()
+except requests.exceptions.ConnectionError:
+    print(
+        "\nCouldn't reach LM Studio at http://localhost:1234\n"
+        "Make sure LM Studio is open, a model is loaded, and its local "
+        "server is started (Developer tab) before running this.\n"
+    )
+    raise SystemExit(1)
+
 MODEL = models["data"][0]["id"]
 
 load_models()

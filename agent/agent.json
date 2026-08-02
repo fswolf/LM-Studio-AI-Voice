@@ -10,7 +10,8 @@
         "summarize_chunk": 10
     },
     "long_term_memory": {
-        "enabled": true
+        "enabled": true,
+        "max_facts": 40
     },
     "reminders": {
         "enabled": true,

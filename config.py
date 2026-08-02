@@ -20,6 +20,7 @@ MAX_RAW_MESSAGES = _history_cfg.get("max_raw_messages", 20)
 SUMMARIZE_CHUNK = _history_cfg.get("summarize_chunk", 10)
 
 LONG_TERM_MEMORY_ENABLED = agent.get("long_term_memory", {}).get("enabled", True)
+LONG_TERM_MEMORY_MAX_FACTS = agent.get("long_term_memory", {}).get("max_facts", 40)
 
 _reminders_cfg = agent.get("reminders", {})
 REMINDERS_ENABLED = _reminders_cfg.get("enabled", True)
