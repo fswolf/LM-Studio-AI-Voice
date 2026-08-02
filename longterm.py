@@ -17,6 +17,15 @@ _lock = threading.Lock()
 
 memory.setdefault("long_term_facts", [])
 
+# A real "fact" is one short, plain sentence describing something
+# durable about the user - not a full assistant reply. Caps length and
+# rejects multi-line / in-character text so a model that ignores the
+# "one short sentence" instruction in the extraction prompt can't dump
+# an entire chatty reply (cat sounds, emoji, search results, etc.)
+# straight into permanent memory.
+_MAX_FACT_CHARS = 220
+_VOICE_TELLS = ("mrrp", "nya~", "senpai", "purring", "\U0001F63E".lower())
+
 
 def get_facts() -> list:
     return list(memory.get("long_term_facts", []))
@@ -28,9 +37,22 @@ def save():
             json.dump(memory, f, indent=4)
 
 
+def _looks_like_valid_fact(fact: str) -> bool:
+    if not fact or fact.upper() == "NONE":
+        return False
+    if len(fact) > _MAX_FACT_CHARS:
+        return False
+    if "\n" in fact:  # a real fact is one line - multi-line means a leaked reply
+        return False
+    lowered = fact.lower()
+    if any(tell in lowered for tell in _VOICE_TELLS):
+        return False
+    return True
+
+
 def add_fact(fact: str):
     fact = fact.strip()
-    if not fact:
+    if not _looks_like_valid_fact(fact):
         return
     with _lock:
         facts = memory.setdefault("long_term_facts", [])
@@ -77,7 +99,7 @@ def _extract_fact(model, user_text, answer):
     except Exception:
         return  # extraction failing shouldn't ever break the conversation
 
-    if result and result.upper() != "NONE":
+    if _looks_like_valid_fact(result):
         add_fact(result)
 
 

@@ -106,13 +106,34 @@ def _chat_completion(payload):
     return data["choices"][0]["message"]["content"]
 
 
+def _format_ts(ts: str) -> str:
+    """Normalize a stored timestamp to the space-separated
+    'YYYY-MM-DD HH:MM:SS' format described in the system prompt.
+
+    history.add_message() stores timestamps via .isoformat(), which
+    produces a "T" between date and time (e.g. "2026-08-01T23:20:44").
+    The system prompt tells the model to expect a space-separated
+    format instead - that mismatch was the root cause of the model
+    echoing "[2026-08-01T23:20:44]" back at the start of replies: it
+    was just mimicking the only timestamp format it actually saw.
+    Routing every timestamp through this one function keeps the
+    prompt's description and the actual payload in sync.
+    """
+    try:
+        return datetime.fromisoformat(ts).strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return ts
+
+
 def _strip_leading_timestamps(text: str) -> str:
-    pattern = r"^(\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\s*)+"
+    # Tolerates both "T" and space separators as a safety net, in case
+    # a differently-formatted timestamp ever makes it into a reply.
+    pattern = r"^(\[\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}\]\s*)+"
     return re.sub(pattern, "", text).strip()
 
 
 def _timestamped(role, content, timestamp):
-    return {"role": role, "content": f"[{timestamp}] {content}"}
+    return {"role": role, "content": f"[{_format_ts(timestamp)}] {content}"}
 
 
 def ask(text, model):
