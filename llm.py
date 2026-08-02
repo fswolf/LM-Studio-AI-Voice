@@ -79,6 +79,33 @@ def build_generation_params():
     return params
 
 
+def _chat_completion(payload):
+    """POST to LM_URL and return the reply text.
+
+    Raises a RuntimeError with LM Studio's actual error message when
+    the response doesn't have "choices" - e.g. context length
+    exceeded, a bad/unsupported param, model not loaded, etc. Without
+    this, a malformed response just raises a bare KeyError('choices')
+    with no indication of what actually went wrong.
+    """
+    response = requests.post(LM_URL, json=payload)
+
+    try:
+        data = response.json()
+    except ValueError:
+        raise RuntimeError(
+            f"LM Studio returned a non-JSON response (HTTP {response.status_code}): "
+            f"{response.text[:300]}"
+        )
+
+    if "choices" not in data:
+        detail = data.get("error", data)
+        print(f"[llm] LM Studio response missing 'choices': {detail}")
+        raise RuntimeError(f"LM Studio error: {detail}")
+
+    return data["choices"][0]["message"]["content"]
+
+
 def _strip_leading_timestamps(text: str) -> str:
     pattern = r"^(\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\s*)+"
     return re.sub(pattern, "", text).strip()
@@ -100,12 +127,19 @@ def ask(text, model):
     for m in history.get_messages_full():
         messages.append(_timestamped(m["role"], m["content"], m.get("timestamp", "unknown time")))
 
+    # Folded into the *user* turn's content rather than a second
+    # "system" message - some chat templates (Jinja-based, incl. this
+    # one) hard-require system to be the first and only system-role
+    # message, and raise a template error if another one shows up
+    # anywhere else in the list.
+    user_content = text
     if websearch.looks_like_search(text):
         query = websearch.extract_query(text)
         results = websearch.search(query)
-        messages.append({"role": "system", "content": websearch.format_results(query, results)})
+        search_block = websearch.format_results(query, results)
+        user_content = f"{search_block}\n\n{text}"
 
-    messages.append(_timestamped("user", text, now_str))
+    messages.append(_timestamped("user", user_content, now_str))
 
     payload = { 
         "model": model,
@@ -114,9 +148,7 @@ def ask(text, model):
 
     payload.update(build_generation_params())
 
-    response = requests.post(LM_URL,json=payload)
-
-    answer = response.json()["choices"][0]["message"]["content"]
+    answer = _chat_completion(payload)
     answer = _strip_leading_timestamps(answer)
 
     # Stored content itself stays clean (no timestamp prefix baked in) -
