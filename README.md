@@ -202,6 +202,7 @@ ai-voice/
 ├── speech.py
 ├── state.py
 ├── ui.py
+├── websearch.py
 │
 ├── agent/
 │   ├── agent.json
