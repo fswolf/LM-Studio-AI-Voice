@@ -79,7 +79,12 @@ def _summarize_with_model(model, chunk):
             "messages": [{"role": "user", "content": prompt}],
         },
     )
-    return response.json()["choices"][0]["message"]["content"].strip()
+    data = response.json()
+    if "choices" not in data:
+        detail = data.get("error", data)
+        print(f"[history] summarization request missing 'choices': {detail}")
+        raise RuntimeError(f"LM Studio error during summarization: {detail}")
+    return data["choices"][0]["message"]["content"].strip()
 
 
 def maybe_summarize(model):
