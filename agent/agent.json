@@ -7,11 +7,11 @@
     },
     "web_search": {
         "enabled": true,
-        "max_results": 5
+        "max_results": 3 
     },
     "history": {
-        "max_raw_messages": 20,
-        "summarize_chunk": 10
+        "max_raw_messages": 15,
+        "summarize_chunk": 8
     },
     "long_term_memory": {
         "enabled": true,
