@@ -47,7 +47,8 @@ huggingface_hub>=0.34.0
 pynput>=1.8.1
 evdev>=1.9.2
 rich>=14.1.0
-wcwidth
+wcwidth>=0.8.2
+ddgs>=9.14.4
 ```
 
 Or simply install everything with:
@@ -68,7 +69,8 @@ huggingface_hub \
 pynput \
 evdev \
 rich \
-wcwidth
+wcwidth \
+ddgs
 ```
 
 ---
@@ -164,6 +166,23 @@ The assistant will:
 3. Extract the task.
 4. Schedule the reminder.
 5. Notify you when the reminder time is reached.
+```
+---
+
+# Web Search (Experemental)
+
+```
+How it works:
+1. A cheap keyword check ("web search" in the message) decides
+   whether to search at all.
+2. If it passes, the text after the trigger phrase becomes the
+   search query and gets run through DuckDuckGo via the `ddgs`
+   package - no API key needed.
+3. Results are formatted into a compact block and added as an extra
+   system-role message for *this turn only*. The user's original
+   text is still what gets saved to history via history.add_message()
+   in llm.py, so raw search results never pollute the permanent
+   conversation log or get repeatedly re-sent on every future turn.
 ```
 
 ---
