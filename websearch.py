@@ -2,7 +2,7 @@ import re
 
 from config import WEB_SEARCH_ENABLED, WEB_SEARCH_MAX_RESULTS
 
-_TRIGGER_PATTERN = re.compile(r"\bweb\s*search\b", re.IGNORECASE)
+_TRIGGER_PATTERN = re.compile(r"\bweb[\s\-_]*search\b", re.IGNORECASE)
 
 _LEADING_FILLER = re.compile(r"^(for|about|on|up)\b\s*", re.IGNORECASE)
 _TRAILING_FILLER = re.compile(r"\b(please|nya|thanks|thank you)\W*$", re.IGNORECASE)
