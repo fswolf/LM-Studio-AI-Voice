@@ -16,8 +16,8 @@ AGENT_NAME = agent["name"]
 VOICE = agent.get("voice", "af_bella")  # falls back if agent.json has no "voice" key
 
 _history_cfg = agent.get("history", {})
-MAX_RAW_MESSAGES = _history_cfg.get("max_raw_messages", 20)
-SUMMARIZE_CHUNK = _history_cfg.get("summarize_chunk", 10)
+MAX_RAW_MESSAGES = _history_cfg.get("max_raw_messages", 15)
+SUMMARIZE_CHUNK = _history_cfg.get("summarize_chunk", 8)
 
 LONG_TERM_MEMORY_ENABLED = agent.get("long_term_memory", {}).get("enabled", True)
 LONG_TERM_MEMORY_MAX_FACTS = agent.get("long_term_memory", {}).get("max_facts", 40)
