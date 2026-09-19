@@ -50,20 +50,25 @@ def _looks_like_valid_fact(fact: str) -> bool:
     return True
 
 
-def add_fact(fact: str):
+def add_fact(fact: str) -> bool:
+    """Returns True if the fact was stored, False if rejected or already
+    known - the remember_fact tool reports that back to the model."""
     fact = fact.strip()
     if not _looks_like_valid_fact(fact):
-        return
+        return False
+    stored = False
     with _lock:
         facts = memory.setdefault("long_term_facts", [])
         if fact not in facts:  # simple exact-match de-dupe
             facts.append(fact)
+            stored = True
         # Cap the list so it can't grow forever - drop the oldest
         # entries first once we're over the limit.
         overflow = len(facts) - LONG_TERM_MEMORY_MAX_FACTS
         if overflow > 0:
             del facts[:overflow]
     save()
+    return stored
 
 
 def _extract_fact(model, user_text, answer):

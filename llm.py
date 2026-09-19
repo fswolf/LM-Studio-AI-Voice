@@ -1,14 +1,25 @@
+import json
 import requests
 import re
 from datetime import datetime
 
-from config import LM_URL
+from config import LM_URL, TOOLS_ENABLED, MAX_TOOL_ROUNDS
 from config import agent
 from config import memory
 import history
 import longterm
 import reminders
+import tools
 import websearch
+
+# Flipped off for the rest of the session the first time LM Studio
+# rejects a tools payload, so a model without a tool template falls back
+# to the old keyword triggers instead of erroring on every turn.
+_tools_supported = TOOLS_ENABLED
+
+
+def tools_active():
+    return _tools_supported
 
 
 def build_memory_prompt():
@@ -27,6 +38,26 @@ def build_memory_prompt():
             prompt += f"- {fact}\n"
 
     return prompt
+
+
+def build_tools_prompt():
+    """A short nudge about the tools. The schemas are sent separately in
+    the payload; this is about *when* to reach for them, which schemas
+    don't convey well to smaller models."""
+    if not _tools_supported:
+        return ""
+
+    return """
+You have tools. Use them instead of guessing or promising:
+- Anything about the current date or time -> get_datetime.
+- The user asking to be reminded of something -> set_reminder or
+  set_reminder_at. Confirm what you scheduled afterwards.
+- Anything you cannot know (news, prices, live facts) -> web_search.
+  Never invent an answer you would have needed to look up.
+- A durable fact about the user worth recalling weeks later ->
+  remember_fact. Not passing details of this conversation.
+Call a tool only when it is needed; chat normally otherwise.
+"""
 
 
 def build_system_prompt():
@@ -58,7 +89,7 @@ Traits:
 
 Rules:
 {', '.join(agent['rules'])}
-
+{build_tools_prompt()}
 {build_memory_prompt()}
 {summary_block}
 """
@@ -80,7 +111,8 @@ def build_generation_params():
 
 
 def _chat_completion(payload):
-    """POST to LM_URL and return the reply text.
+    """POST to LM_URL and return the reply *message* (not just its text,
+    because a tool-calling reply carries tool_calls and no content).
 
     Raises a RuntimeError with LM Studio's actual error message when
     the response doesn't have "choices" - e.g. context length
@@ -103,7 +135,7 @@ def _chat_completion(payload):
         print(f"[llm] LM Studio response missing 'choices': {detail}")
         raise RuntimeError(f"LM Studio error: {detail}")
 
-    return data["choices"][0]["message"]["content"]
+    return data["choices"][0]["message"]
 
 
 def _format_ts(ts: str) -> str:
@@ -136,7 +168,121 @@ def _timestamped(role, content, timestamp):
     return {"role": role, "content": f"[{_format_ts(timestamp)}] {content}"}
 
 
+_THINK_BLOCK = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+
+
+def _content(message):
+    """The usable text of a reply.
+
+    Three things get in the way on local models:
+      * reasoning models wrap their scratchpad in <think>...</think>, and
+        after a tool result the whole reply is sometimes *only* that -
+        which read as an empty answer and, worse, got spoken aloud when
+        it wasn't;
+      * an unterminated <think> when the model runs out of tokens;
+      * some servers return content as a list of blocks, not a string.
+    """
+    content = message.get("content")
+
+    if isinstance(content, list):
+        content = "".join(
+            part.get("text", "") for part in content if isinstance(part, dict)
+        )
+
+    content = content or ""
+    content = _THINK_BLOCK.sub("", content)
+
+    # Unclosed block: keep whatever came before it, drop the rest.
+    if "<think>" in content:
+        content = content.split("<think>", 1)[0]
+
+    return content.strip()
+
+
+def _force_prose(payload):
+    """Ask again with no tools offered.
+
+    After a tool result some models keep trying to call something, or
+    answer with nothing at all. Removing the tools takes that option
+    away, so they have to produce words.
+    """
+    payload = dict(payload)
+    payload.pop("tools", None)
+    payload.pop("tool_choice", None)
+    payload["messages"] = payload["messages"] + [{
+        "role": "user",
+        "content": "(Tell me what you just did, in one short sentence. "
+                   "Do not call any more tools.)",
+    }]
+
+    return _content(_chat_completion(payload))
+
+
+def _tool_rounds(payload, model):
+    """Run the model, execute any tools it asks for, repeat.
+
+    Returns the final assistant text. Each round appends the assistant's
+    tool_calls message and one `tool` message per call, which is the
+    shape OpenAI-compatible servers expect on the way back in.
+    """
+    global _tools_supported
+
+    for _round in range(MAX_TOOL_ROUNDS):
+        message = _chat_completion(payload)
+        calls = message.get("tool_calls") or []
+
+        if not calls:
+            text = _content(message)
+
+            if text:
+                return text
+
+            # Nothing usable and nothing to call: the model has finished
+            # but said nothing. One more attempt with tools removed.
+            return _force_prose(payload) or ""
+
+        # Echo the assistant turn back verbatim - dropping it breaks the
+        # pairing between tool_call_id and result.
+        payload["messages"].append({
+            "role": "assistant",
+            "content": message.get("content") or "",
+            "tool_calls": calls,
+        })
+
+        for call in calls:
+            function = call.get("function", {})
+            name = function.get("name", "")
+            result = tools.call(name, function.get("arguments", "{}"))
+
+            _log_tool_call(name, result)
+
+            payload["messages"].append({
+                "role": "tool",
+                "tool_call_id": call.get("id", ""),
+                "name": name,
+                "content": result,
+            })
+
+    # Out of rounds: same treatment, so a model stuck in a call loop
+    # still produces something the user can read.
+    return _force_prose(payload) or ""
+
+
+def _log_tool_call(name, result):
+    """Surface tool use in the conversation, so it's never a mystery why
+    a reminder appeared or where a fact came from."""
+    try:
+        import ui
+    except Exception:
+        return
+
+    summary = result if len(result) <= 160 else result[:157] + "..."
+    ui.add_message("system", f"{name}() -> {summary}")
+
+
 def ask(text, model):
+    global _tools_supported
+
     now = datetime.now()
     now_str = now.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -153,8 +299,13 @@ def ask(text, model):
     # one) hard-require system to be the first and only system-role
     # message, and raise a template error if another one shows up
     # anywhere else in the list.
+    #
+    # Only needed when tools are unavailable: with tools, the model calls
+    # web_search itself instead of needing the phrase "web search" in
+    # your sentence.
     user_content = text
-    if websearch.looks_like_search(text):
+
+    if not _tools_supported and websearch.looks_like_search(text):
         query = websearch.extract_query(text)
         results = websearch.search(query)
         search_block = websearch.format_results(query, results)
@@ -162,15 +313,41 @@ def ask(text, model):
 
     messages.append(_timestamped("user", user_content, now_str))
 
-    payload = { 
+    payload = {
         "model": model,
         "messages": messages,
     }
 
     payload.update(build_generation_params())
 
-    answer = _chat_completion(payload)
+    if _tools_supported:
+        payload["tools"] = tools.specs()
+
+        try:
+            answer = _tool_rounds(payload, model)
+        except RuntimeError as e:
+            # Most likely this model has no tool template. Drop tools for
+            # the rest of the session and retry the same turn without
+            # them, so the user sees an answer rather than an error.
+            if "tool" not in str(e).lower():
+                raise
+
+            _tools_supported = False
+            payload.pop("tools", None)
+            payload["messages"] = messages
+
+            _log_tool_call(
+                "tools", "unsupported by this model - using keyword triggers"
+            )
+
+            answer = _chat_completion(payload).get("content") or ""
+    else:
+        answer = _chat_completion(payload).get("content") or ""
+
     answer = _strip_leading_timestamps(answer)
+
+    if not answer.strip():
+        answer = "...sorry, I got tangled up there. Say that again?"
 
     # Stored content itself stays clean (no timestamp prefix baked in) -
     # the prefix above is only added when building the API payload, so
@@ -182,7 +359,11 @@ def ask(text, model):
     history.maybe_summarize(model)
     history.save()
 
-    longterm.extract_in_background(model, text, answer)
-    reminders.extract_in_background(model, text)
+    # With tools available the model calls remember_fact and the reminder
+    # tools itself, so the keyword extractors would only duplicate work -
+    # and double-schedule reminders.
+    if not _tools_supported:
+        longterm.extract_in_background(model, text, answer)
+        reminders.extract_in_background(model, text)
 
     return answer

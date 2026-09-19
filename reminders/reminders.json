@@ -1,1 +1,10 @@
-[]
+[
+  {
+    "id": "d2d53c39",
+    "text": "go to bed",
+    "due_at": "2026-09-19T06:31:23",
+    "created_at": "2026-09-19T05:31:23",
+    "repeat": null,
+    "attempts": 0
+  }
+]

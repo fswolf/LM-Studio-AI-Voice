@@ -1,4 +1,22 @@
 __pycache__/
 *.pyc
 
+# Conversation log, long-term facts and scheduled reminders - all
+# personal, all regenerated at runtime.
 history/conversation.json
+reminders/reminders.json
+
+# Screenshots and previews dropped here while working
+Claude outputs/
+
+# Virtualenvs, in case one ever lands inside the repo
+ai-voice-venv/
+.venv/
+venv/
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store

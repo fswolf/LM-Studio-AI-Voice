@@ -1,164 +1,530 @@
+"""Reminders.
+
+The division of labour that made the original work is kept: the model
+only *extracts* what you said - a number, a unit, a clock time - and all
+date arithmetic happens here in Python. Models are bad at "what time is
+it in 90 minutes" and fine at "the user said 90 minutes".
+
+What changed:
+
+  * Failures are visible. The old version returned silently on bad JSON,
+    so a reminder you thought was set simply never existed.
+  * Absolute times ("at 5pm", "tomorrow at 9") alongside durations.
+  * Reminders are removed only after delivery succeeds, so an LM Studio
+    hiccup can't swallow one.
+  * The scanner sleeps until the next reminder is actually due instead
+    of waking on a fixed interval, so "in one minute" means one minute.
+  * Repeats.
+"""
 import json
 import os
+import re
 import threading
 import time
+import uuid
 
 import requests
 from datetime import datetime, timedelta
 
-from config import LM_URL, AGENT_NAME, REMINDERS_ENABLED, REMINDER_CHECK_INTERVAL_SECONDS, BASE_DIR
+from config import (
+    LM_URL,
+    AGENT_NAME,
+    REMINDERS_ENABLED,
+    REMINDER_CHECK_INTERVAL_SECONDS,
+    BASE_DIR,
+)
 
 REMINDERS_DIR = os.path.join(BASE_DIR, "reminders")
 REMINDERS_FILE = os.path.join(REMINDERS_DIR, "reminders.json")
 
+MAX_DELIVERY_ATTEMPTS = 3
+
 _lock = threading.Lock()
-_reminders = []  # list of {"due_at": iso string, "text": "..."}
-
-
-def load():
-    global _reminders
-    if os.path.exists(REMINDERS_FILE):
-        try:
-            with open(REMINDERS_FILE, "r") as f:
-                _reminders = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            _reminders = []
-    else:
-        _reminders = []
-
-
-def save():
-    os.makedirs(REMINDERS_DIR, exist_ok=True)
-    with _lock:
-        with open(REMINDERS_FILE, "w") as f:
-            json.dump(_reminders, f, indent=2)
-
-
-def _looks_like_reminder(text: str) -> bool:
-    return "remind" in text.lower()
-
+_reminders = []
+# Set whenever the schedule changes, so the scanner recomputes its sleep
+# instead of napping through a reminder added a second ago.
+_wake = threading.Event()
 
 _UNIT_MAP = {
     "second": "seconds", "seconds": "seconds", "sec": "seconds", "secs": "seconds",
     "minute": "minutes", "minutes": "minutes", "min": "minutes", "mins": "minutes",
     "hour": "hours", "hours": "hours", "hr": "hours", "hrs": "hours",
     "day": "days", "days": "days",
+    "week": "weeks", "weeks": "weeks",
 }
+
+# Deliberately wide. A false positive costs one cheap model call that
+# answers NONE; a false negative means the reminder silently never
+# existed, which is the failure people actually notice.
+_TRIGGERS = re.compile(
+    r"\b("
+    r"remind|reminder|remember to|don'?t let me forget|forget to|"
+    r"wake me|nudge me|ping me|tell me to|let me know|alarm|timer|"
+    r"in \d+\s*(second|sec|minute|min|hour|hr|day|week)s?|"
+    r"in (a|an|half)\s+(second|minute|hour|day|week)|"
+    r"at \d{1,2}([:.]\d{2})?\s*(am|pm|o'?clock)|"
+    r"every (morning|evening|night|day|hour|week|\d+)|"
+    r"tomorrow|tonight|later"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+# ---------------------------------------------------------------------------
+# Storage
+# ---------------------------------------------------------------------------
+def load():
+    global _reminders
+
+    if not os.path.exists(REMINDERS_FILE):
+        _reminders = []
+        return
+
+    try:
+        with open(REMINDERS_FILE, "r") as f:
+            loaded = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        _reminders = []
+        return
+
+    # Tolerate records written by the older version, which had no ids.
+    for item in loaded:
+        item.setdefault("id", uuid.uuid4().hex[:8])
+        item.setdefault("attempts", 0)
+        item.setdefault("repeat", None)
+
+    _reminders = loaded
+
+
+def save():
+    os.makedirs(REMINDERS_DIR, exist_ok=True)
+
+    with _lock:
+        snapshot = list(_reminders)
+
+    try:
+        with open(REMINDERS_FILE, "w") as f:
+            json.dump(snapshot, f, indent=2)
+    except OSError:
+        pass  # best effort; a failed save shouldn't kill the turn
+
+
+def pending():
+    """Everything scheduled, soonest first."""
+    with _lock:
+        items = list(_reminders)
+
+    return sorted(items, key=lambda r: r.get("due_at", ""))
+
+
+def count():
+    with _lock:
+        return len(_reminders)
+
+
+def cancel(index):
+    """Cancel by 1-based position as shown by pending(). Returns the
+    removed reminder, or None."""
+    items = pending()
+
+    if index < 1 or index > len(items):
+        return None
+
+    target = items[index - 1]
+
+    with _lock:
+        _reminders[:] = [r for r in _reminders if r.get("id") != target.get("id")]
+
+    save()
+    _wake.set()
+
+    return target
+
+
+# ---------------------------------------------------------------------------
+# Formatting helpers
+# ---------------------------------------------------------------------------
+def human_delta(seconds):
+    seconds = int(max(0, seconds))
+
+    if seconds < 60:
+        return f"in {seconds}s"
+
+    minutes, seconds = divmod(seconds, 60)
+
+    if minutes < 60:
+        return f"in {minutes}m" if seconds < 30 else f"in {minutes}m {seconds}s"
+
+    hours, minutes = divmod(minutes, 60)
+
+    if hours < 24:
+        return f"in {hours}h" if not minutes else f"in {hours}h {minutes}m"
+
+    days, hours = divmod(hours, 24)
+
+    return f"in {days}d" if not hours else f"in {days}d {hours}h"
+
+
+def describe(reminder):
+    try:
+        due = datetime.fromisoformat(reminder["due_at"])
+    except (KeyError, ValueError):
+        return reminder.get("text", "?")
+
+    now = datetime.now()
+    when = due.strftime("%H:%M") if due.date() == now.date() else \
+        due.strftime("%a %d %b %H:%M")
+
+    repeat = reminder.get("repeat")
+    suffix = f" (repeats {_describe_repeat(repeat)})" if repeat else ""
+
+    return "{} - {} ({}){}".format(
+        when, reminder.get("text", "?"),
+        human_delta((due - now).total_seconds()), suffix,
+    )
+
+
+def _describe_repeat(repeat):
+    if not repeat:
+        return ""
+
+    if repeat.get("unit"):
+        return f"every {repeat['amount']:g} {repeat['unit']}"
+
+    return f"daily at {repeat.get('at', '?')}"
+
+
+# ---------------------------------------------------------------------------
+# Extraction
+# ---------------------------------------------------------------------------
+def _looks_like_reminder(text):
+    return bool(_TRIGGERS.search(text or ""))
+
+
+_PROMPT = """You extract reminder requests. Do NOT do any arithmetic and do
+NOT convert times - only report what was said.
+
+Reply with ONLY one of these:
+
+NONE
+  - the message does not ask to be reminded of anything later.
+
+{"kind":"in","amount":<number>,"unit":"seconds|minutes|hours|days|weeks","text":"<what to remind about>"}
+  - a delay was given, e.g. "in 10 minutes", "in an hour" -> amount 1, unit hours.
+
+{"kind":"at","time":"HH:MM","day":"today|tomorrow","text":"<what to remind about>"}
+  - a clock time was given. Use 24-hour time. "5pm" -> "17:00". "tonight"
+    with no time -> "20:00" today. "tomorrow morning" -> "09:00" tomorrow.
+
+{"kind":"every","amount":<number>,"unit":"minutes|hours|days","text":"<what>"}
+  - a repeating interval, e.g. "every 30 minutes".
+
+{"kind":"daily","time":"HH:MM","text":"<what>"}
+  - repeats at the same clock time each day, e.g. "every morning at 8".
+
+The text field is the thing to be reminded about, in plain words, without
+"remind me to".
+
+Message: %s"""
+
+
+def _parse_json(raw):
+    """Pull a JSON object out of whatever the model wrapped it in."""
+    cleaned = raw.strip().strip("`").strip()
+
+    if cleaned.lower().startswith("json"):
+        cleaned = cleaned[4:].strip()
+
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+
+    if start == -1 or end <= start:
+        return None
+
+    try:
+        return json.loads(cleaned[start:end + 1])
+    except json.JSONDecodeError:
+        return None
+
+
+def _clock_today(now, hhmm):
+    """'17:00' -> a datetime today at that time."""
+    match = re.match(r"^\s*(\d{1,2})[:.](\d{2})\s*$", str(hhmm))
+
+    if not match:
+        return None
+
+    hour, minute = int(match.group(1)), int(match.group(2))
+
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+
+    return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
+def schedule_from(data, now=None):
+    """Turn extracted fields into (due_at, repeat). Returns (None, None)
+    if the data doesn't describe a usable time.
+
+    All the arithmetic lives here rather than in the model.
+    """
+    now = now or datetime.now()
+    kind = str(data.get("kind", "")).strip().lower()
+    text = str(data.get("text", "")).strip()
+
+    if not text:
+        return None, None
+
+    if kind in ("in", "every"):
+        try:
+            amount = float(data["amount"])
+        except (KeyError, TypeError, ValueError):
+            return None, None
+
+        unit = _UNIT_MAP.get(str(data.get("unit", "")).strip().lower())
+
+        if unit is None or amount <= 0:
+            return None, None
+
+        due = now + timedelta(**{unit: amount})
+        repeat = {"amount": amount, "unit": unit} if kind == "every" else None
+
+        return due, repeat
+
+    if kind in ("at", "daily"):
+        due = _clock_today(now, data.get("time"))
+
+        if due is None:
+            return None, None
+
+        if str(data.get("day", "")).strip().lower() == "tomorrow":
+            due += timedelta(days=1)
+        elif due <= now:
+            # The time has already gone today, so they meant tomorrow.
+            due += timedelta(days=1)
+
+        repeat = {"at": due.strftime("%H:%M")} if kind == "daily" else None
+
+        return due, repeat
+
+    return None, None
+
+
+def add(text, due, repeat):
+    reminder = {
+        "id": uuid.uuid4().hex[:8],
+        "text": text,
+        "due_at": due.isoformat(timespec="seconds"),
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "repeat": repeat,
+        "attempts": 0,
+    }
+
+    with _lock:
+        _reminders.append(reminder)
+
+    save()
+    _wake.set()
+
+    return reminder
 
 
 def _extract_reminder(model, text):
-    now = datetime.now()
-    prompt = (
-        "Does this message ask to be reminded of something at a future "
-        "time? If yes, reply with ONLY strict JSON extracting exactly "
-        "what was said - do NOT calculate or convert anything, just "
-        "pull out the number, the time unit, and the reminder text as "
-        'stated, e.g. {"amount": 5, "unit": "hours", "text": "check the '
-        'oven"}. unit must be one of: seconds, minutes, hours, days. '
-        "If the message does not ask for a reminder, reply with exactly "
-        "NONE.\n\n"
-        f"Message: {text}"
-    )
+    import ui
+
     try:
         response = requests.post(
             LM_URL,
-            json={"model": model, "messages": [{"role": "user", "content": prompt}]},
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": _PROMPT % text}],
+            },
+            timeout=60,
         )
-        result = response.json()["choices"][0]["message"]["content"].strip()
-    except Exception:
+        raw = response.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        ui.add_message("system", f"Couldn't check that for a reminder: {e}")
         return
 
-    if result.upper() == "NONE":
+    if raw.upper().startswith("NONE"):
+        return  # not a reminder; nothing to report
+
+    data = _parse_json(raw)
+
+    if data is None:
+        ui.add_message(
+            "system",
+            "That looked like a reminder but I couldn't read a time out of "
+            "it - try something like \"remind me in 10 minutes to stretch\".",
+        )
         return
 
-    try:
-        cleaned = result.strip().strip("`")
-        if cleaned.lower().startswith("json"):
-            cleaned = cleaned[4:].strip()
-        data = json.loads(cleaned)
-        amount = float(data["amount"])
-        unit = _UNIT_MAP.get(str(data["unit"]).strip().lower())
-        reminder_text = str(data["text"]).strip()
-    except (json.JSONDecodeError, KeyError, ValueError, TypeError):
-        return  # model didn't return usable JSON - fail silently
+    due, repeat = schedule_from(data)
 
-    if unit is None or not reminder_text:
-        return  # unrecognized unit or empty text - don't guess, just skip
+    if due is None:
+        ui.add_message(
+            "system",
+            "That looked like a reminder but the time didn't make sense - "
+            "try \"in 10 minutes\" or \"at 17:30\".",
+        )
+        return
 
-    due_at = now + timedelta(**{unit: amount})  # the only math happens here, in code
+    reminder = add(str(data.get("text", "")).strip(), due, repeat)
 
-    with _lock:
-        _reminders.append({"due_at": due_at.isoformat(), "text": reminder_text})
-    save()
+    # The whole point of the rewrite: say so, out loud, every time.
+    ui.add_message("system", f"Reminder set - {describe(reminder)}")
 
 
 def extract_in_background(model, text):
     if not REMINDERS_ENABLED or not _looks_like_reminder(text):
         return
-    threading.Thread(target=_extract_reminder, args=(model, text), daemon=True).start()
+
+    threading.Thread(
+        target=_extract_reminder, args=(model, text), daemon=True
+    ).start()
 
 
-def _pop_due():
+# ---------------------------------------------------------------------------
+# Delivery
+# ---------------------------------------------------------------------------
+def _due_now():
     now = datetime.now()
     due = []
-    remaining = []
+
     with _lock:
-        for r in _reminders:
+        for reminder in _reminders:
             try:
-                due_at = datetime.fromisoformat(r["due_at"])
+                if datetime.fromisoformat(reminder["due_at"]) <= now:
+                    due.append(reminder)
             except (KeyError, ValueError):
                 continue
-            if due_at <= now:
-                due.append(r)
-            else:
-                remaining.append(r)
-        _reminders[:] = remaining
-    if due:
-        save()
+
     return due
 
 
-def run_scanner(model):
-    """
-    Background loop: on start, loads reminders.json (so anything saved
-    from a previous session isn't lost/ignored) and immediately checks
-    for reminders that are already due - e.g. one that came due while
-    the app was closed. After that, it checks again every
-    REMINDER_CHECK_INTERVAL_SECONDS.
+def _retire(reminder, delivered):
+    """Reschedule a repeating reminder, or drop a one-off.
 
-    Each due reminder is processed inside its own try/except - a
-    single failure (LM Studio error, context overflow, TTS hiccup,
-    etc.) gets logged and skipped rather than raising out of the loop.
-    Without this, one bad reminder would kill this entire background
-    thread silently - no more reminders would ever fire for the rest
-    of the session, with nothing on screen indicating why.
+    Only called once delivery actually worked - the old code removed
+    reminders before attempting delivery, so a failure lost them.
     """
+    repeat = reminder.get("repeat")
+
+    if delivered and repeat:
+        now = datetime.now()
+
+        if repeat.get("unit"):
+            due = now + timedelta(**{repeat["unit"]: float(repeat["amount"])})
+        else:
+            due = _clock_today(now, repeat.get("at")) or now
+
+            while due <= now:
+                due += timedelta(days=1)
+
+        reminder["due_at"] = due.isoformat(timespec="seconds")
+        reminder["attempts"] = 0
+        save()
+        return
+
+    with _lock:
+        _reminders[:] = [r for r in _reminders if r.get("id") != reminder.get("id")]
+
+    save()
+
+
+def _seconds_until_next():
+    items = pending()
+
+    if not items:
+        return REMINDER_CHECK_INTERVAL_SECONDS
+
+    try:
+        due = datetime.fromisoformat(items[0]["due_at"])
+    except (KeyError, ValueError):
+        return REMINDER_CHECK_INTERVAL_SECONDS
+
+    remaining = (due - datetime.now()).total_seconds()
+
+    return max(0.5, min(remaining, REMINDER_CHECK_INTERVAL_SECONDS))
+
+
+def _deliver(model, texts, missed=False):
+    """Hand the reminder(s) to Luna so she raises them in her own voice."""
+    import llm
     import ui
     from speech import speak
-    import llm
+    import state
 
-    load()  # pick up whatever was saved from the last session
-    if _reminders:
-        print(f"[reminders] Loaded {len(_reminders)} pending reminder(s) from {REMINDERS_FILE}")
+    if len(texts) == 1:
+        body = f'"{texts[0]}"'
     else:
-        print("[reminders] No pending reminders.")
+        body = "; ".join(f'"{t}"' for t in texts)
+
+    prefix = (
+        "These reminders came due while the app was closed"
+        if missed else
+        "This is a reminder you set earlier"
+    )
+
+    trigger = (
+        f"({prefix}: {body}. Bring "
+        f"{'them' if len(texts) > 1 else 'it'} up now, naturally, in your "
+        "own voice.)"
+    )
+
+    ui.set_status("Reminder due...")
+    answer = llm.ask(trigger, model)
+    ui.add_message(AGENT_NAME.lower(), answer)
+
+    if not state.stop_speaking:
+        ui.set_status("Speaking...")
+        speak(answer)
+
+    ui.set_status("Idle")
+
+
+def run_scanner(model):
+    import ui
+
+    load()
+
+    if _reminders:
+        ui.add_message("system", f"Loaded {len(_reminders)} pending reminder(s).")
+
+    first_pass = True
 
     while True:
         if REMINDERS_ENABLED:
-            for r in _pop_due():
-                try:
-                    ui.set_status("Reminder due...")
-                    trigger_text = (
-                        f'(This is a reminder you set earlier: "{r["text"]}". '
-                        "Bring it up now, naturally, in your own voice.)"
-                    )
-                    answer = llm.ask(trigger_text, model)
-                    ui.add_message(AGENT_NAME.lower(), answer)
-                    ui.set_status("Speaking...")
-                    speak(answer)
-                    ui.set_status("Idle")
-                except Exception as e:
-                    print(f"[reminders] Failed to deliver reminder {r!r}: {e}")
-                    ui.set_status(f"Reminder failed: {e}")
+            due = _due_now()
 
-        time.sleep(REMINDER_CHECK_INTERVAL_SECONDS)
+            if due:
+                # Anything already overdue at startup gets delivered as one
+                # message rather than N separate model calls in a row.
+                batch = due if (first_pass and len(due) > 1) else due[:1]
+
+                try:
+                    _deliver(model, [r["text"] for r in batch], missed=first_pass)
+
+                    for reminder in batch:
+                        _retire(reminder, delivered=True)
+                except Exception as e:
+                    for reminder in batch:
+                        reminder["attempts"] = reminder.get("attempts", 0) + 1
+
+                        if reminder["attempts"] >= MAX_DELIVERY_ATTEMPTS:
+                            ui.add_message(
+                                "system",
+                                f"Giving up on reminder \"{reminder['text']}\" "
+                                f"after {MAX_DELIVERY_ATTEMPTS} tries: {e}",
+                            )
+                            _retire(reminder, delivered=False)
+
+                    save()
+                    ui.set_status("Idle")
+
+            first_pass = False
+
+        # Sleep until the next one is actually due. _wake fires early when
+        # a reminder is added or cancelled.
+        _wake.wait(timeout=_seconds_until_next())
+        _wake.clear()
