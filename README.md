@@ -8,6 +8,9 @@ A local AI voice assistant powered by:
 - 🧠 LM Studio (Local LLM) with tool calling
 - 🗣️ [kokoro-reader](https://github.com/fswolf/kokoro-reader) (Kokoro TTS over local HTTP)
 - 🎹 Push-to-talk, three modes including hands free
+- ⚡ Streaming replies — she starts talking a sentence in, not at the end
+- ✋ Barge-in — talk over her and she stops
+- 👀 Optional vision — she can look at your screen
 - 💬 Full-screen terminal interface
 
 Everything runs locally. No cloud APIs required.
@@ -54,6 +57,8 @@ evdev>=1.9.2
 prompt_toolkit>=3.0.0
 wcwidth>=0.8.2
 ddgs>=9.14.4
+
+openwakeword        # optional - "hey Luna" instead of a keypress
 ```
 
 Install dependencies:
@@ -76,6 +81,12 @@ evdev \
 prompt_toolkit \
 wcwidth \
 ddgs
+```
+
+Optional, for the wake word:
+
+```bash
+pip install openwakeword
 ```
 
 `kokoro`, `torch` and `torchaudio` are for the **TTS server**, not the
@@ -104,6 +115,12 @@ portaudio19-dev \
 ffmpeg
 ```
 
+Optional, for vision on Wayland:
+
+```bash
+sudo apt install grim slurp
+```
+
 ## Fedora
 
 ```bash
@@ -112,6 +129,13 @@ ffmpeg \
 portaudio-devel \
 python3-devel \
 gcc
+```
+
+For vision on Wayland, add `grim` (screenshots) and `slurp` (the region
+picker). Both are optional and only needed if you turn vision on.
+
+```bash
+sudo dnf install grim slurp
 ```
 
 ---
@@ -160,10 +184,14 @@ curl -s localhost:8899/health
 curl -s localhost:8899/voices
 ```
 
-Long replies are split on sentence boundaries under the server's
-1200-character limit, and the next chunk is synthesized while the
-current one plays. If the server isn't answering, the assistant says so
-and keeps working as a text chat.
+Replies are streamed. Each sentence is sent to the server the moment the
+model finishes writing it, so she starts talking about a sentence in
+rather than after the whole reply exists — and the next chunk is
+synthesized while the current one plays, so there's no gap between them.
+Chunks stay under the server's 1200-character limit.
+
+If the server isn't answering, the assistant says so and keeps working
+as a text chat.
 
 Optional `tts` block in `agent/agent.json`:
 
@@ -213,9 +241,13 @@ Slash commands:
 |---------|--------|
 | `/mode` | `auto`, `manual` or `open` — switch without restarting |
 | `/mic` | What the voice detector measured on the last recording |
+| `/barge` | Whether talking over her will work, and the levels |
+| `/wake` | Wake word status and live scores |
 | `/reminders` | List what's scheduled, with countdowns |
 | `/cancel N` | Cancel reminder N |
-| `/tools` | Which tools the model can call |
+| `/when ...` | Test how a time phrase is read, without scheduling it |
+| `/look` | List windows, or test a screenshot |
+| `/tools` | Which tools the model can call — and which it can't, and why |
 | `/keys` | Hotkey + socket diagnostics |
 | `/clear` | Wipe the conversation and saved history |
 | `/quit` | Exit |
@@ -262,6 +294,10 @@ Open mode only records *between* turns, never while Luna is speaking,
 and waits `settle_seconds` after she finishes before re-arming —
 otherwise her own voice out of the speakers retriggers the mic and she
 talks to herself. Headphones make it moot.
+
+Barge-in is the exception to that rule, and it has its own section
+below. With a wake word loaded, open mode waits for her name instead of
+starting on any speech at all.
 
 ---
 
@@ -318,6 +354,94 @@ Triggering on background noise? Raise it to 0.5–0.6.
 
 ---
 
+# Barge-in
+
+Start talking while she's speaking and she stops.
+
+The problem is that your microphone hears *her* too, and Silero is quite
+right to call that speech. There's no acoustic echo cancellation here, so
+the only honest discriminator left is loudness: her voice reaches the mic
+attenuated by the room, yours doesn't.
+
+So the first half-second of playback measures how loud she is **at your
+microphone**, and after that it takes both a confident speech
+classification and a level well above that baseline, held for
+`barge_in_seconds`, to count as an interruption. On headphones the
+baseline is near silence and this is trivially reliable. On speakers it
+depends on your volume.
+
+`/barge` shows you the numbers:
+
+```
+barge-in on | her level at your mic=0.0061 | you need 0.0153 to cut in |
+loudest you hit=0.0402 | best speech score=0.91
+```
+
+Interrupting herself? Raise `barge_in_margin`. Won't trigger no matter
+how loud you are? Lower it, or wear headphones.
+
+```json
+"stt": {
+    "barge_in": true,
+    "barge_in_seconds": 0.35,
+    "barge_in_margin": 2.5,
+    "barge_in_boost": 0.25
+}
+```
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `barge_in` | `true` | Needs Silero — the energy detector can't do this |
+| `barge_in_seconds` | `0.35` | How long you must keep talking. Lower and a cough cuts her off |
+| `barge_in_margin` | `2.5` | How much louder than her own bleed you have to be |
+| `barge_in_boost` | `0.25` | Added to the VAD threshold while she's talking |
+
+In open mode a barge-in skips the settle pause, because you're already
+mid-sentence and waiting would eat the start of it.
+
+---
+
+# Wake Word
+
+Optional. Replaces HOME in open mode: say her name and she listens.
+
+[openWakeWord](https://github.com/dscripka/openWakeWord) runs a small
+ONNX classifier over 80ms frames — cheap enough to leave running all day
+without Whisper or the language model ever waking up.
+
+There is no pretrained "hey Luna", and there won't be unless you make
+one. Two options:
+
+- **Use a stock phrase.** `hey_jarvis`, `alexa`, `hey_mycroft` and
+  `hey_rhasspy` ship with the package and work immediately.
+- **Train her name.** openWakeWord's training notebook turns synthetic
+  samples into an `.onnx` you point `model` at. It takes about an hour
+  and is the only way to get "hey Luna".
+
+```json
+"wake_word": {
+    "enabled": true,
+    "model": "hey_jarvis",
+    "threshold": 0.5,
+    "follow_up_seconds": 12,
+    "cooldown_seconds": 1.0
+}
+```
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `enabled` | `false` | Off unless you ask for it |
+| `model` | `hey_jarvis` | A built-in name, or a path to one you trained |
+| `threshold` | `0.5` | Raise if it fires at the television, lower if it ignores you |
+| `follow_up_seconds` | `12` | How long she keeps listening afterwards, so a follow-up doesn't need her name again |
+| `cooldown_seconds` | `1.0` | Deaf period after a detection, so the tail of the phrase isn't heard as a second one |
+
+`/wake` shows live scores for tuning the threshold. If the package or the
+model file is missing it says so and open mode falls back to starting on
+any speech.
+
+---
+
 # Global Hotkey on Hyprland (Optional)
 
 HOME works while the assistant's window is focused, on Linux, macOS and
@@ -369,12 +493,24 @@ check the time, then schedule something.
 
 | Tool | What it does |
 |------|--------------|
-| `get_datetime` | Current date and time, so it stops guessing |
-| `set_reminder` | Schedule N minutes from now, optionally repeating |
-| `set_reminder_at` | Schedule at a clock time, optionally daily |
+| `get_datetime` | Date, time, weekday and timezone, so it stops guessing |
+| `time_until` | How far away a date is, without counting days in its head |
+| `set_reminder` | Schedule anything — "tomorrow at 9", "every monday" |
 | `list_reminders` / `cancel_reminder` | Read and cancel what's pending |
 | `remember_fact` / `recall_facts` | Long-term memory, written deliberately |
+| `forget_fact` / `update_fact` | Correct it when it got something wrong |
+| `look_at_screen` | Take a screenshot and actually see it (optional) |
 | `web_search` | DuckDuckGo, for anything it can't know |
+
+A tool whose dependencies are missing isn't offered at all, rather than
+offered and failed. Telling a model it can see when `grim` isn't
+installed gets you an assistant that confidently describes a screen it
+never looked at. `/tools` lists both sides:
+
+```
+Tools she can call: get_datetime, set_reminder, web_search, ...
+  look_at_screen is NOT offered - vision is off - set "vision": {"enabled": true}
+```
 
 Every call is echoed into the conversation, so it's never a mystery why
 a reminder appeared:
@@ -409,20 +545,45 @@ to answer in words.
 ```
 Ask in plain language:
 
-> "Hey Luna, remind me in 10 minutes to clean the desk."
+> "Remind me in 10 minutes to clean the desk."
 > "Wake me up at 7:30 tomorrow."
 > "Every morning at 8 remind me to take my meds."
+> "Nudge me next friday at 4 about the invoice."
 > "Every 30 minutes remind me to fix my posture."
 
-The model only extracts what you said - a number, a unit, a clock time.
-All the date arithmetic happens in Python, because models are bad at
-"what time is it in 90 minutes" and fine at "the user said 90 minutes".
+The model passes your timing words through untouched. It does not
+convert them, and it does not calculate a date - all of that happens in
+Python, because a small model is bad at "what is two days in minutes"
+and perfectly fine at repeating "two days".
 ```
 
-Each one confirms itself the moment it's scheduled:
+That division of labour is the whole design. `timeutil.parse_when()`
+understands delays, clock times, weekdays, calendar dates and repeats:
+
+| You say | It schedules |
+|---------|--------------|
+| `in ten minutes` | 10 minutes from now |
+| `in a couple hours` | 2 hours |
+| `at 8` *(said at 2pm)* | 20:00 today, not tomorrow morning |
+| `tonight at 11` | 23:00, not 11:00 |
+| `tomorrow morning` | 09:00 tomorrow |
+| `next friday at 4pm` | 16:00 on the Friday after this one |
+| `december 25` | that date, rolling to next year if it's passed |
+| `every monday at 9` | weekly |
+| `every morning at 8` | daily, and still 08:00 after the clocks change |
+
+`/when <phrase>` shows how anything is read without scheduling it:
 
 ```
-sys  │ Reminder set - 14:40 - stretch (in 10m)
+> /when every other tuesday
+'every other tuesday' -> Tuesday 09:00 (in 3 days), repeats every 2 weeks
+```
+
+Each reminder confirms itself the moment it's scheduled, in words rather
+than timestamps — because these get read aloud:
+
+```
+sys  │ Scheduled: tomorrow 09:00 - take the bins out (in 18 hours)
 ```
 
 If it looked like a reminder but the time couldn't be read, it says that
@@ -434,6 +595,143 @@ message on next launch. A reminder is removed only once delivery
 succeeds — if LM Studio is down when it fires, it retries rather than
 vanishing. The scanner sleeps until the next one is actually due, so "in
 one minute" means one minute.
+
+Repeats are measured from when the reminder was *due*, not when it was
+delivered, so one that goes out four minutes late doesn't drag the whole
+schedule later every day. Daily times are rebuilt from the wall clock
+rather than by adding 24 hours, which is the difference between "every
+morning at 8" staying at 8 and quietly becoming 7 for the winter. And if
+the app was closed for a week, the daily reminder is due tomorrow — not
+seven times at once.
+
+---
+
+# Vision
+
+Optional. Lets her look at your screen.
+
+```
+> "What does this error say?"
+> "Read my editor for me."
+> "Look at the wiki page."
+> "What's on my screen?"
+```
+
+Needs `grim`, and a **vision model** loaded in LM Studio. A text-only
+model rejects the image and says so plainly rather than inventing a
+description.
+
+```json
+"vision": {
+    "enabled": true,
+    "scale": 0.5,
+    "max_kb": 4096
+}
+```
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `enabled` | `false` | Off unless you ask for it |
+| `scale` | `0.5` | grim's scale factor. Half a 4K screen still reads fine and is a quarter of the bytes |
+| `max_kb` | `4096` | Refuses rather than sending something that takes ten seconds to move |
+
+## How it works
+
+A tool result is a **string** — there's nowhere in the tool-calling
+format to hand back an image. So `look_at_screen` captures one, stashes
+it, and returns a sentence saying it did; the image is then attached to
+the next message as an `image_url` block. From the model's point of view
+it asked to look at something and the next thing it saw was a picture.
+
+The image lives for exactly one turn. It isn't written to history, so
+she can't look back at an earlier screenshot — ask "what about now?" and
+she takes a new one.
+
+## Which window
+
+This is the fiddly part, and the answer depends on how you asked.
+
+**Typed at her**, the focused window is her own terminal, and the one
+behind it is whatever you last touched — on a tiling compositor that's
+close to arbitrary. So typed turns capture the whole screen, which on
+Hyprland is honest anyway: everything is visible at once.
+
+**By voice through a compositor bind**, you deliberately focused
+something before you spoke, so the focused window is exactly right.
+
+Either way she never photographs herself: her own terminal is found by
+walking `/proc` up from her process, and skipped.
+
+You can also just name it. The model passes your words through and the
+matching happens in Python, including the generic words people actually
+use:
+
+```
+"look at my browser"       -> firefox
+"what's in my editor"      -> Code
+"read the music player"    -> kitty running ncmpcpp
+```
+
+`/look` tests all of it without involving the model:
+
+```
+/look              list the windows she can choose from
+/look full         the whole screen
+/look select       drag a box, like a screenshot bind
+/look firefox      one window by name
+```
+
+That separates "is grim working" from "can this model see", which are
+the two ways this fails and they look identical from the outside.
+
+---
+
+# Memory
+
+Facts are written deliberately by the model, not scraped from every
+turn, and they live in `agent/memory.json` where you can edit them by
+hand. A malformed file no longer takes the app down on startup — it says
+what's wrong, leaves the file alone and starts empty.
+
+```
+> "Remember I stream on Tuesdays."      -> remember_fact
+> "No, I moved to Thursdays."           -> update_fact
+> "Forget the bakery thing."            -> forget_fact
+```
+
+`forget_fact` and `update_fact` take a loose description rather than an
+index — "that thing about the bakery" is enough. When two facts are too
+close to call it lists them and asks which, instead of guessing and
+deleting the wrong one.
+
+```json
+"long_term_memory": {
+    "enabled": true,
+    "max_facts": 30,
+    "context_facts": 25
+}
+```
+
+Under `context_facts` every fact goes into every prompt, which is fine at
+thirty. Over it, only the ones sharing vocabulary with what you just said
+travel, plus the newest few regardless — a wall of unrelated trivia is
+exactly what makes a small model start answering questions nobody asked.
+
+## Conversation history
+
+Older turns are folded into a running summary once there are more than
+`max_raw_messages`. That summary is re-compressed when it passes
+`summary_max_chars` rather than being appended to forever, and the
+folding happens on a worker thread, so the turn that tips the count over
+the limit isn't the one that pays for it.
+
+```json
+"history": {
+    "max_raw_messages": 15,
+    "summarize_chunk": 8,
+    "summary_max_chars": 2500
+}
+```
 
 ---
 
@@ -461,6 +759,18 @@ python3 kokoro-say.py                 # read the clipboard aloud through
                                       # the kokoro server - bind it to a key
 ```
 
+> `agent.json` and `agent/memory.json` are tracked so they ship with the
+> repo, which means a `git pull --rebase` will happily put the committed
+> copies back over your local tuning. If you edit them and don't want
+> that, tell git to leave your copies alone:
+>
+> ```bash
+> git update-index --skip-worktree agent/agent.json agent/memory.json
+> ```
+>
+> `push.sh` already knows about skip-worktree files and won't warn about
+> them. The trade-off is that your local edits stop being pushed too.
+
 ---
 
 # Project Structure
@@ -482,8 +792,11 @@ ai-voice/
 ├── reminders.py
 ├── speech.py
 ├── state.py
+├── timeutil.py
 ├── tools.py
 ├── ui.py
+├── vision.py
+├── wakeword.py
 ├── websearch.py
 │
 ├── agent/
@@ -516,10 +829,14 @@ ai-voice/
 - Local speech recognition with Silero voice detection
 - Local language model with tool calling
 - Local text-to-speech via a shared Kokoro server
+- Streaming replies — she talks while she's still thinking
+- Barge-in — interrupt her mid-sentence
+- Optional wake word, so open mode needs no keypress
+- Optional vision — she can read what's on your screen
 - Three push-to-talk modes, including hands free
 - Configurable AI personality
-- Long-term memory the model writes deliberately
-- Reminders with repeats, confirmation and retry
+- Long-term memory the model writes, corrects and forgets
+- Reminders in plain language, with repeats, retry and DST-safe schedules
 - Web search the model reaches for on its own
 - Themeable full-screen terminal interface
 - Cross-platform architecture

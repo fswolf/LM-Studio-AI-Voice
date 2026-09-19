@@ -295,6 +295,32 @@ def handle_input(text):
         ui.add_message("system", f"Captured {detail}. That's what she'd see.")
         return
 
+    if text == "/mic":
+        levels = speech.levels
+
+        if levels.get("backend") == "silero":
+            ui.add_message(
+                "system",
+                "vad=silero | speech above {:.2f}, ends below {:.2f} | "
+                "last peak={:.4f} | triggered={} | captured={:.1f}s | mode={}".format(
+                    levels["start"], levels["continue"], levels["peak"],
+                    levels["triggered"], levels["speech_seconds"],
+                    levels.get("mode", "?"),
+                ),
+            )
+        else:
+            ui.add_message(
+                "system",
+                "vad=energy | noise floor={:.4f} | start>{:.4f} | "
+                "continue>{:.4f} | last peak={:.4f} | triggered={} | "
+                "captured={:.1f}s | mode={}".format(
+                    levels["noise_floor"], levels["start"], levels["continue"],
+                    levels["peak"], levels["triggered"], levels["speech_seconds"],
+                    levels.get("mode", "?"),
+                ),
+            )
+        return
+
     if text == "/barge":
         if not speech.barge_in_available():
             ui.add_message(
