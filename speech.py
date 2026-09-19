@@ -1,5 +1,7 @@
 import io
+import queue
 import re
+import threading
 import wave
 
 import requests
@@ -30,6 +32,10 @@ from config import (
     STT_MODE,
     STT_VAD,
     STT_VAD_THRESHOLD,
+    STT_BARGE_IN,
+    STT_BARGE_IN_SECONDS,
+    STT_BARGE_IN_MARGIN,
+    STT_BARGE_IN_BOOST,
 )
 
 whisper = None
@@ -160,6 +166,10 @@ levels = {
     "triggered": False,
     "mode": STT_MODE,
     "backend": "energy",
+    # Barge-in, reported by /barge
+    "barge_baseline": 0.0,
+    "barge_peak": 0.0,
+    "barge_probability": 0.0,
 }
 
 
@@ -537,26 +547,312 @@ def _play(samples, rate):
 
 
 def speak(text):
-    state.stop_speaking = False
+    """Speak a complete string. Used where the whole reply is already
+    in hand - reminders, startup notices."""
+    pieces = _split_chunks(text or "")
 
-    chunks = _split_chunks(text or "")
-
-    if not chunks:
+    if not pieces:
         return
 
-    pending = _pool.submit(_synthesize, chunks[0])
+    state.stop_speaking = False
 
-    for index in range(len(chunks)):
-        samples, rate = pending.result()
+    inbox = queue.Queue()
 
-        # Queue the next chunk's synthesis now so it renders while this
-        # one is still playing - long replies stop stuttering between
-        # sentences. Don't bother if we've already been interrupted.
-        has_next = index + 1 < len(chunks) and not state.stop_speaking
-        pending = _pool.submit(_synthesize, chunks[index + 1]) if has_next else None
+    for piece in pieces:
+        inbox.put(piece)
 
-        if state.stop_speaking or not _play(samples, rate):
-            break
+    inbox.put(None)
 
-        if pending is None:
-            break
+    speak_queue(inbox, reset=False)
+
+
+def speak_queue(inbox, reset=True):
+    """Speak sentences as they arrive on a queue, terminated by None.
+
+    This is the streaming path. The producer is the model itself, still
+    generating, so the first sentence usually reaches the speaker while
+    the rest of the reply is still being written - which is the whole
+    difference between a voice assistant that answers and one that
+    pauses first.
+
+    Synthesis runs on the pool while the previous chunk is still
+    playing, so the gap between sentences stays inaudible.
+    """
+    if reset:
+        state.stop_speaking = False
+
+    pending = deque()
+    done = False
+
+    try:
+        while True:
+            # Keep one synthesis in flight ahead of playback. More than
+            # one gains nothing: the server renders them serially.
+            while not done and len(pending) < 2:
+                try:
+                    item = inbox.get(timeout=0.05)
+                except queue.Empty:
+                    break
+
+                if item is None:
+                    done = True
+                    break
+
+                for piece in _split_chunks(item):
+                    pending.append(_pool.submit(_synthesize, piece))
+
+            if state.stop_speaking:
+                return
+
+            if not pending:
+                if done:
+                    return
+
+                continue
+
+            future = pending.popleft()
+
+            try:
+                samples, rate = future.result()
+            except RuntimeError as e:
+                # Server down mid-reply. Say so once and stop; the text
+                # is already on screen, so nothing is actually lost.
+                ui.add_message("system", str(e))
+                return
+            except Exception:
+                continue
+
+            if state.stop_speaking or not _play(samples, rate):
+                return
+    finally:
+        for future in pending:
+            future.cancel()
+
+
+# ---------------------------------------------------------------------------
+# Barge-in
+#
+# The problem with listening while she talks is that the microphone
+# hears her too, and Silero is quite right to call that speech. With no
+# echo cancellation available the only honest discriminator left is
+# loudness: her voice arrives at the mic attenuated by the room, yours
+# doesn't.
+#
+# So the first fraction of a second of playback is used to measure how
+# loud she is *at the microphone*, and after that it takes both a
+# confident speech classification and a level well above that baseline,
+# sustained, to count as you interrupting. On headphones the baseline is
+# near silence and this is trivially reliable; on speakers it depends on
+# your volume, which is why the margin is configurable.
+# ---------------------------------------------------------------------------
+BARGE_IN_CALIBRATION_SECONDS = 0.5
+BARGE_IN_FLOOR = 0.004      # below this it's room tone, not a person
+
+
+def _speech_probability(block):
+    """Raw Silero probability for one 512-sample frame."""
+    import torch
+
+    with torch.no_grad():
+        return float(_vad_model(torch.from_numpy(block), SAMPLE_RATE).item())
+
+
+def _watch_for_barge_in(stop):
+    """Set state.stop_speaking if the user starts talking over Luna.
+
+    Runs for as long as playback does. Bails out quietly on any audio
+    error - failing to offer barge-in is a missing nicety, but crashing
+    the speaker thread would lose the reply.
+    """
+    threshold = min(0.95, STT_VAD_THRESHOLD + STT_BARGE_IN_BOOST)
+    block_seconds = VAD_BLOCK_SIZE / SAMPLE_RATE
+    needed = max(1, int(STT_BARGE_IN_SECONDS / block_seconds))
+
+    bleed = []
+    calibrating = max(1, int(BARGE_IN_CALIBRATION_SECONDS / block_seconds))
+    baseline = None
+    streak = 0
+
+    levels["barge_peak"] = 0.0
+    levels["barge_probability"] = 0.0
+
+    # The model carries LSTM state between frames, and it was last used
+    # on your voice, not hers.
+    try:
+        _vad_model.reset_states()
+    except Exception:
+        pass
+
+    try:
+        stream = sd.InputStream(
+            samplerate=SAMPLE_RATE, channels=1,
+            blocksize=VAD_BLOCK_SIZE, dtype="float32",
+        )
+        stream.start()
+    except Exception:
+        return
+
+    try:
+        while not stop.is_set() and not state.stop_speaking:
+            audio, _overflow = stream.read(VAD_BLOCK_SIZE)
+            block = audio[:, 0].copy()
+            level = _rms(block)
+
+            if baseline is None:
+                bleed.append(level)
+
+                if len(bleed) >= calibrating:
+                    # Upper quartile: her loudest moments are the ones
+                    # that would otherwise trigger a false interrupt.
+                    bleed.sort()
+                    baseline = max(
+                        BARGE_IN_FLOOR, bleed[int(len(bleed) * 0.75)]
+                    )
+                    levels["barge_baseline"] = baseline
+
+                continue
+
+            levels["barge_peak"] = max(levels["barge_peak"], level)
+
+            if level < baseline * STT_BARGE_IN_MARGIN:
+                streak = 0
+                continue
+
+            try:
+                probability = _speech_probability(block)
+            except Exception:
+                return
+
+            levels["barge_probability"] = max(
+                levels["barge_probability"], probability
+            )
+
+            if probability < threshold:
+                streak = 0
+                continue
+
+            streak += 1
+
+            if streak >= needed:
+                state.stop_speaking = True
+                state.barged_in = True
+                ui.set_status("Stopped - go ahead")
+                return
+    except Exception:
+        return
+    finally:
+        try:
+            stream.stop()
+            stream.close()
+        except Exception:
+            pass
+
+
+def barge_in_available():
+    return STT_BARGE_IN and _vad_model is not None
+
+
+# ---------------------------------------------------------------------------
+# Wake word
+# ---------------------------------------------------------------------------
+def wait_for_wake_word(should_stop):
+    """Block until the wake word is heard.
+
+    Returns True if it fired, False if `should_stop()` asked us to give
+    up. Nothing else runs while this does - no Whisper, no model, just
+    a 1.5MB classifier over 80ms frames - so it can sit here all day.
+    """
+    import wakeword
+
+    if not wakeword.available():
+        return True  # nothing to wait for; behave as before
+
+    ui.set_status(f"Waiting for \"{wakeword.label()}\"")
+    wakeword.reset()
+
+    try:
+        stream = sd.InputStream(
+            samplerate=SAMPLE_RATE, channels=1,
+            blocksize=wakeword.FRAME_SIZE, dtype="float32",
+        )
+        stream.start()
+    except Exception as e:
+        ui.add_message("system", f"Wake word listener couldn't open the mic: {e}")
+        return True
+
+    try:
+        while not should_stop():
+            audio, _overflow = stream.read(wakeword.FRAME_SIZE)
+
+            if wakeword.heard(audio[:, 0].copy()):
+                return True
+
+            if state.stop_listening:
+                return False
+    except Exception as e:
+        ui.add_message("system", f"Wake word listener stopped: {e}")
+        return True
+    finally:
+        try:
+            stream.stop()
+            stream.close()
+        except Exception:
+            pass
+
+    return False
+
+
+class Player:
+    """A speaker you can hand sentences to while they're still being
+    written, and stop mid-word.
+
+    main.py holds one of these for the length of a turn. Playback runs
+    on its own thread so the model can keep generating into it.
+    """
+
+    def __init__(self, barge_in=True):
+        self._inbox = queue.Queue()
+        self._thread = None
+        self._listener = None
+        self._stop_listener = threading.Event()
+        self._barge_in = barge_in
+
+    def say(self, sentence):
+        if state.stop_speaking:
+            return
+
+        if self._thread is None:
+            ui.set_status("Speaking...")
+            self._thread = threading.Thread(
+                target=speak_queue, args=(self._inbox,),
+                kwargs={"reset": False}, daemon=True,
+            )
+            self._thread.start()
+
+            if self._barge_in and barge_in_available():
+                self._listener = threading.Thread(
+                    target=_watch_for_barge_in, args=(self._stop_listener,),
+                    daemon=True,
+                )
+                self._listener.start()
+
+        self._inbox.put(sentence)
+
+    def wait(self):
+        """Block until everything queued has been spoken."""
+        if self._thread is None:
+            return
+
+        self._inbox.put(None)
+        self._thread.join()
+        self._thread = None
+
+        self._stop_listener.set()
+
+        if self._listener is not None:
+            self._listener.join(timeout=1.0)
+            self._listener = None
+
+    @property
+    def started(self):
+        return self._thread is not None

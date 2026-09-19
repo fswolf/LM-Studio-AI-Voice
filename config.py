@@ -11,8 +11,24 @@ SAMPLE_RATE = 16000
 with open(os.path.join(BASE_DIR, "agent", "agent.json"), "r") as file:
     agent = json.load(file)
 
-with open(os.path.join(BASE_DIR, "agent", "memory.json"), "r") as file:
-    memory = json.load(file)
+# A stray comma in memory.json used to take the whole app down on
+# startup with a bare JSONDecodeError - and the most likely way to get
+# one is editing the file by hand, which is a thing you're meant to be
+# able to do. Say what's wrong, keep the broken file, carry on empty.
+_memory_path = os.path.join(BASE_DIR, "agent", "memory.json")
+
+try:
+    with open(_memory_path, "r") as file:
+        memory = json.load(file)
+except FileNotFoundError:
+    memory = {}
+except (json.JSONDecodeError, OSError) as _memory_error:
+    print(
+        f"\nCouldn't read {_memory_path}:\n  {_memory_error}\n"
+        "Starting with an empty memory. The file has been left alone - "
+        "fix the syntax and restart to get your facts back.\n"
+    )
+    memory = {}
 
 AGENT_NAME = agent["name"]
 
@@ -155,12 +171,86 @@ STT_MANUAL_MAX_SECONDS = float(_stt_cfg.get("manual_max_seconds", 300))
 # mode, so the tail of her own voice doesn't retrigger it.
 STT_SETTLE_SECONDS = float(_stt_cfg.get("settle_seconds", 0.6))
 
+# -------------------------
+# Barge-in
+# -------------------------
+# Listen while Luna is speaking, and cut her off when you start
+# talking. Needs Silero - the energy detector can't tell your voice
+# from her own coming back through the speakers.
+#
+# That bleed is the whole problem with barge-in and there is no
+# acoustic echo cancellation here, so the mic level during playback is
+# measured and used as the baseline: you have to be noticeably louder
+# than she is at the microphone. On headphones that's trivially true.
+# On speakers, turn the volume down or raise the margin.
+STT_BARGE_IN = bool(_stt_cfg.get("barge_in", True))
+# How long you have to keep talking before she stops. Too low and a
+# cough cuts her off; too high and you're talking over her for a
+# second before she notices.
+STT_BARGE_IN_SECONDS = float(_stt_cfg.get("barge_in_seconds", 0.35))
+# How much louder than her own bleed you have to be. Lower it on
+# headphones, raise it if she keeps interrupting herself.
+STT_BARGE_IN_MARGIN = float(_stt_cfg.get("barge_in_margin", 2.5))
+# Added to the normal VAD threshold while she's talking - a higher bar
+# for "that's speech" when we already know speech is playing.
+STT_BARGE_IN_BOOST = float(_stt_cfg.get("barge_in_boost", 0.25))
+
+# -------------------------
+# Wake word
+# -------------------------
+# Replaces HOME in open mode: say her name and she listens. Optional
+# "wake_word" block in agent.json:
+#
+#   "wake_word": {
+#       "enabled": true,
+#       "model": "~/models/hey_luna.onnx",
+#       "threshold": 0.5,
+#       "follow_up_seconds": 12
+#   }
+#
+# model is either a path to one you trained with openWakeWord, or the
+# name of one of theirs (hey_jarvis, alexa, hey_mycroft, hey_rhasspy).
+# There is no pretrained "hey Luna" - see wakeword.py.
+_wake_cfg = agent.get("wake_word", {})
+WAKE_WORD_ENABLED = bool(_wake_cfg.get("enabled", False))
+WAKE_WORD_MODEL = _wake_cfg.get("model", "hey_jarvis")
+# Raise if it fires at the television, lower if it ignores you.
+WAKE_WORD_THRESHOLD = float(_wake_cfg.get("threshold", 0.5))
+# After answering, how long she keeps listening without the wake word,
+# so a follow-up question doesn't need her name again.
+WAKE_WORD_FOLLOW_UP_SECONDS = float(_wake_cfg.get("follow_up_seconds", 12))
+# Deaf period right after a detection, so the tail of "hey Luna" isn't
+# heard as a second one.
+WAKE_WORD_COOLDOWN = float(_wake_cfg.get("cooldown_seconds", 1.0))
+
+# -------------------------
+# Vision
+# -------------------------
+# Lets her look at your screen. Needs grim, and needs a vision model
+# loaded in LM Studio - a text-only model will reject the request and
+# the error is shown as-is. Optional "vision" block in agent.json:
+#   "vision": { "enabled": true, "scale": 0.5 }
+_vision_cfg = agent.get("vision", {})
+VISION_ENABLED = bool(_vision_cfg.get("enabled", False))
+# grim's own scale factor. Half a 4K screen is still plenty to read an
+# error dialog off, and a quarter of the bytes.
+VISION_SCALE = float(_vision_cfg.get("scale", 0.5))
+VISION_MAX_BYTES = int(_vision_cfg.get("max_kb", 4096)) * 1024
+
 _history_cfg = agent.get("history", {})
 MAX_RAW_MESSAGES = _history_cfg.get("max_raw_messages", 15)
 SUMMARIZE_CHUNK = _history_cfg.get("summarize_chunk", 8)
+# The running summary is re-compressed once it passes this, rather than
+# being appended to forever.
+SUMMARY_MAX_CHARS = int(_history_cfg.get("summary_max_chars", 2500))
 
 LONG_TERM_MEMORY_ENABLED = agent.get("long_term_memory", {}).get("enabled", True)
 LONG_TERM_MEMORY_MAX_FACTS = agent.get("long_term_memory", {}).get("max_facts", 40)
+# How many facts may go into one system prompt. Under this, all of them
+# do; over it, the ones relevant to what was just said.
+LONG_TERM_MEMORY_CONTEXT_FACTS = agent.get("long_term_memory", {}).get(
+    "context_facts", 25
+)
 
 # -------------------------
 # Tool calling

@@ -14,8 +14,10 @@ import threading
 import time
 
 import config
+import speech
 import state
 import ui
+import wakeword
 
 from assistant import assistant_task
 
@@ -70,6 +72,7 @@ def _interrupt():
     ui.set_status("Stopped")
     state.stop_speaking = True
     state.stop_listening = True
+    state.barged_in = False
 
 
 # ---------------------------------------------------------------------------
@@ -78,18 +81,45 @@ def _interrupt():
 def _hands_free_loop(model):
     """Listen, answer, listen again.
 
-    Deliberately sequential: recording only happens between turns, never
-    while Luna is speaking. Without that, her own voice out of the
-    speakers retriggers the mic and she talks to herself indefinitely.
-    The settle pause covers the tail end of playback.
+    Recording proper still only happens between turns - her own voice
+    out of the speakers would otherwise retrigger the mic and she'd
+    talk to herself indefinitely - and the settle pause covers the tail
+    end of playback.
+
+    Barge-in is the exception, and it is handled during playback by a
+    separate monitor with a much higher bar (speech.watch_for_barge_in).
+    When it fires the user is already mid-sentence, so waiting out the
+    settle pause would eat the start of what they're saying.
     """
+    # With a wake word loaded, she waits for her name before the first
+    # turn - and then stays open for a while afterwards, so a follow-up
+    # question doesn't need saying it again. Without one, every turn
+    # starts on speech, which is what open mode always did.
+    follow_up_until = 0.0
+
     while _hands_free:
         state.stop_speaking = False
         state.stop_listening = False
+        state.barged_in = False
+
+        if wakeword.available() and time.monotonic() > follow_up_until:
+            if not speech.wait_for_wake_word(lambda: not _hands_free):
+                break
+
+            if not _hands_free:
+                break
+
+            time.sleep(wakeword.cooldown_seconds())
+
         state.assistant_busy = True
 
         try:
-            assistant_task(model, "open")
+            # Once the wake word has armed it, a silent turn should
+            # time out rather than wait forever - it was probably the
+            # television. Without a wake word, waiting is the point.
+            spoke = assistant_task(
+                model, "auto" if wakeword.available() else "open"
+            )
         except Exception as e:
             ui.add_message("system", f"Listening stopped: {e}")
             break
@@ -99,7 +129,14 @@ def _hands_free_loop(model):
         if not _hands_free:
             break
 
-        time.sleep(config.STT_SETTLE_SECONDS)
+        # Only hold the door open if she actually answered something.
+        follow_up_until = (
+            time.monotonic() + config.WAKE_WORD_FOLLOW_UP_SECONDS
+            if spoke else 0.0
+        )
+
+        if not state.barged_in:
+            time.sleep(config.STT_SETTLE_SECONDS)
 
     stop_hands_free()
 

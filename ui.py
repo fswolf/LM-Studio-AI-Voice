@@ -84,7 +84,7 @@ def set_status(status: str):
 
 
 def set_voice_server(label: str):
-    """Update the TTS server shown beside the voice name."""
+    """Update the server shown beside the TTS voice name."""
     with _lock:
         if state["voice_server"] == label:
             return
@@ -93,7 +93,7 @@ def set_voice_server(label: str):
 
 
 def set_mode(mode: str):
-    """Recording mode - its own header row, not a suffix on the status."""
+    """Recording mode - shown on the Voice row."""
     with _lock:
         if state["mode"] == mode:
             return
@@ -120,6 +120,66 @@ def add_message(speaker: str, text: str):
     with _lock:
         conversation.append((speaker, text))
         _scrollback = 0  # a new message pulls you back to the bottom
+    _refresh()
+
+
+# A streamed reply is one message that grows. The line cache keys on
+# the last tuple, so replacing it in place is enough to invalidate.
+def begin_message(speaker: str):
+    """Open an empty message for extend_message() to fill in."""
+    global _scrollback
+
+    with _lock:
+        conversation.append((speaker, ""))
+        _scrollback = 0
+    _refresh()
+
+
+def extend_message(text: str):
+    """Append to the open message as tokens arrive."""
+    global _scrollback
+
+    if not text:
+        return
+
+    with _lock:
+        if not conversation:
+            return
+
+        speaker, existing = conversation[-1]
+        conversation[-1] = (speaker, existing + text)
+        _scrollback = 0
+    _refresh()
+
+
+def replace_message(text: str):
+    """Swap the streamed text for the final cleaned-up version.
+
+    Worth doing even though they're usually identical: the streamed
+    text is raw, and the final one has had stray timestamps and
+    leftover think-tags stripped out of it.
+    """
+    global _scrollback
+
+    with _lock:
+        if not conversation:
+            return
+
+        speaker, existing = conversation[-1]
+
+        if existing == text:
+            return
+
+        conversation[-1] = (speaker, text)
+        _scrollback = 0
+    _refresh()
+
+
+def drop_empty_message():
+    """Remove the open message if nothing ever arrived in it."""
+    with _lock:
+        if conversation and not conversation[-1][1].strip():
+            conversation.pop()
     _refresh()
 
 
@@ -201,16 +261,17 @@ def _status_lines():
     offline = "offline" in voice_server
     server_style = "class:warn" if offline else "class:value"
 
-    # Voice and its server are one fact, not two - which engine is
-    # speaking and where it lives.
+    # Voice = how you talk to her (the recording mode); TTS = how she
+    # talks back, which voice and where it's synthesized. The TTS voice
+    # and its server are one fact, not two.
     rows = [
         ("Status", [
             ("class:ok" if state["status"] == "Idle" else "class:value",
              state["status"]),
         ]),
-        ("Mic", [("class:value", state["mode"])]),
+        ("Voice", [("class:value", state["mode"])]),
         ("Memory", [("class:value", state["memory"])]),
-        ("Voice", [
+        ("TTS", [
             ("class:value", state["voice"]),
             ("class:dim", " - "),
             (server_style, voice_server),
@@ -379,12 +440,16 @@ _HELP_SECTIONS = [
     ("Voice", [
         ("/mode", "auto | manual | open"),
         ("/mic", "levels from the last recording"),
+        ("/barge", "talk-over-her diagnostics"),
+        ("/wake", "wake word status and scores"),
     ]),
     ("Reminders", [
         ("/reminders", "list what's scheduled"),
         ("/cancel N", "cancel reminder N"),
+        ("/when ...", "test how a time phrase is read"),
     ]),
     ("Session", [
+        ("/look", "test a screenshot: active|full|select"),
         ("/tools", "which tools the model can call"),
         ("/keys", "hotkey + socket diagnostics"),
         ("/clear", "wipe conversation and saved history"),

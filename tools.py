@@ -16,20 +16,27 @@ rather than propagating, because a failed tool should be something the
 model can talk about, not something that kills the turn.
 """
 import json
-from datetime import datetime
 
 import longterm
 import reminders
+import timeutil
+import vision
 import websearch
 
 _REGISTRY = {}
 
 
-def tool(name, description, properties, required=()):
-    """Register a function as a callable tool."""
+def tool(name, description, properties, required=(), available=None, why=None):
+    """Register a function as a callable tool.
+
+    `available` is checked each turn - a tool whose dependencies aren't
+    installed is simply not offered.
+    """
     def decorator(fn):
         _REGISTRY[name] = {
             "run": fn,
+            "available": available or (lambda: True),
+            "why": why or (lambda: ""),
             "spec": {
                 "type": "function",
                 "function": {
@@ -49,11 +56,29 @@ def tool(name, description, properties, required=()):
 
 
 def specs():
-    return [entry["spec"] for entry in _REGISTRY.values()]
+    """The tool list sent to the model.
+
+    A tool that can't work is left out rather than offered and failed.
+    Telling a model it can see, when grim isn't installed, gets you an
+    assistant that confidently describes a screen it never looked at.
+    """
+    return [
+        entry["spec"] for entry in _REGISTRY.values()
+        if entry["available"]()
+    ]
 
 
 def names():
-    return sorted(_REGISTRY)
+    return sorted(name for name, entry in _REGISTRY.items() if entry["available"]())
+
+
+def unavailable():
+    """(name, why) for each tool that isn't being offered."""
+    return [
+        (name, entry["why"]())
+        for name, entry in sorted(_REGISTRY.items())
+        if not entry["available"]()
+    ]
 
 
 def call(name, arguments):
@@ -83,101 +108,90 @@ def call(name, arguments):
 # ---------------------------------------------------------------------------
 # Time
 # ---------------------------------------------------------------------------
+# The reply is a block rather than a bare clock reading on purpose. A
+# model that only knows "14:32" still cannot answer "what's the date on
+# Friday" - and a small one will not admit that, it will invent a date.
+# Everything it might need is spelled out so it never has to calculate.
 @tool(
     "get_datetime",
-    "Get the current local date and time. Use this before answering any "
-    "question about what day or time it is, rather than guessing.",
+    "Get the current date, time, weekday and timezone. Call this before "
+    "answering anything about what day or time it is, how long until "
+    "something, or what the date will be - never work it out yourself.",
     {},
 )
 def _get_datetime():
-    now = datetime.now()
+    return timeutil.describe_now()
 
-    return now.strftime("%A %d %B %Y, %H:%M")
+
+@tool(
+    "time_until",
+    "Work out how far away a date or time is, or what date it falls on. "
+    "Pass the user's own words - 'christmas day', 'next friday', "
+    "'december 25', '18:00'. Use this instead of counting days yourself.",
+    {
+        "when": {
+            "type": "string",
+            "description": "The date or time to measure to, in plain words.",
+        },
+    },
+    required=("when",),
+)
+def _time_until(when):
+    moment, _ = timeutil.parse_when(when)
+
+    if moment is None:
+        return (
+            f"Couldn't read {when!r} as a date or time. Ask the user to "
+            "say it another way - do not guess."
+        )
+
+    return "{} falls on {} - that is {}.".format(
+        when, moment.strftime("%A %d %B %Y at %H:%M"), timeutil.relative(moment)
+    )
 
 
 # ---------------------------------------------------------------------------
 # Reminders
 # ---------------------------------------------------------------------------
-# Two separate tools rather than one with a mode flag: small models pick
-# the right one far more reliably than they fill in the right subset of a
-# polymorphic schema.
+# One tool, one free-text field. This used to be two tools - one taking
+# minutes, one taking a clock time - because small models fill in a
+# polymorphic schema badly. That is still true, but the fix was the
+# wrong way round: the model was being asked to *translate* ("in two
+# days" -> 2880 minutes), which is exactly the arithmetic it gets wrong.
+#
+# Now it repeats the user's own timing words and timeutil.parse_when()
+# does the work, so there is nothing left to choose between.
 @tool(
     "set_reminder",
-    "Schedule a reminder a given number of minutes from now. Use this for "
-    "'in ten minutes', 'in an hour' (60), 'in two days' (2880).",
+    "Schedule a reminder. Pass the user's own timing words through "
+    "unchanged - 'in ten minutes', 'tomorrow at 9', 'next friday', "
+    "'every morning at 8', 'tonight'. Never convert them to a number "
+    "and never calculate a date yourself.",
     {
         "text": {
             "type": "string",
             "description": "What to remind the user about, in plain words, "
                            "without 'remind me to'.",
         },
-        "minutes": {
-            "type": "number",
-            "description": "How many minutes from now.",
-        },
-        "repeat": {
-            "type": "boolean",
-            "description": "True to repeat at that interval forever.",
+        "when": {
+            "type": "string",
+            "description": "When it should fire, exactly as the user said "
+                           "it. Repeats are fine: 'every 30 minutes', "
+                           "'every monday at 9', 'daily at 7:30'.",
         },
     },
-    required=("text", "minutes"),
+    required=("text", "when"),
 )
-def _set_reminder(text, minutes, repeat=False):
-    due, repeat_spec = reminders.schedule_from({
-        "kind": "every" if repeat else "in",
-        "amount": minutes,
-        "unit": "minutes",
-        "text": text,
-    })
+def _set_reminder(text, when):
+    due, repeat = timeutil.parse_when(when)
 
     if due is None:
-        return "Error: that wasn't a usable delay. Minutes must be positive."
+        return (
+            f"Couldn't read {when!r} as a time, so nothing was scheduled. "
+            "Ask the user when they want it - do not guess a time."
+        )
 
-    return "Scheduled: " + reminders.describe(
-        reminders.add(text, due, repeat_spec)
-    )
-
-
-@tool(
-    "set_reminder_at",
-    "Schedule a reminder at a specific clock time, e.g. 'at 5pm', "
-    "'tomorrow at 9', 'every morning at 8'.",
-    {
-        "text": {
-            "type": "string",
-            "description": "What to remind the user about.",
-        },
-        "time": {
-            "type": "string",
-            "description": "24-hour clock time as HH:MM. 5pm is 17:00.",
-        },
-        "day": {
-            "type": "string",
-            "enum": ["today", "tomorrow"],
-            "description": "Which day. Defaults to today, rolling to "
-                           "tomorrow if that time has already passed.",
-        },
-        "daily": {
-            "type": "boolean",
-            "description": "True to repeat at that time every day.",
-        },
-    },
-    required=("text", "time"),
-)
-def _set_reminder_at(text, time, day="today", daily=False):
-    due, repeat_spec = reminders.schedule_from({
-        "kind": "daily" if daily else "at",
-        "time": time,
-        "day": day,
-        "text": text,
-    })
-
-    if due is None:
-        return "Error: couldn't read that as a time. Use 24-hour HH:MM."
-
-    return "Scheduled: " + reminders.describe(
-        reminders.add(text, due, repeat_spec)
-    )
+    return "Scheduled: " + reminders.describe(reminders.add(text, due, repeat))
 
 
 @tool(
@@ -250,6 +264,118 @@ def _recall_facts():
     facts = longterm.get_facts()
 
     return "\n".join(f"- {f}" for f in facts) if facts else "Nothing saved yet."
+
+
+@tool(
+    "forget_fact",
+    "Delete something remembered about the user, when they say it is "
+    "wrong or ask you to forget it. Describe the fact in your own "
+    "words - you do not need to quote it exactly.",
+    {
+        "about": {
+            "type": "string",
+            "description": "Roughly what the fact says, e.g. 'that he "
+                           "works at the bakery'.",
+        },
+    },
+    required=("about",),
+)
+def _forget_fact(about):
+    removed, candidates = longterm.forget_fact(about)
+
+    if removed:
+        return f"Forgotten: {removed}"
+
+    if candidates:
+        listing = "\n".join(f"- {c}" for c in candidates)
+
+        return (
+            f"More than one could be it:\n{listing}\nAsk the user which "
+            "one, then call this again with wording closer to theirs."
+        )
+
+    return f"Nothing remembered matches {about!r}. Nothing was deleted."
+
+
+@tool(
+    "update_fact",
+    "Correct something remembered about the user when the old version "
+    "is out of date - they moved, changed jobs, finished the project.",
+    {
+        "about": {
+            "type": "string",
+            "description": "Roughly what the old fact says.",
+        },
+        "corrected": {
+            "type": "string",
+            "description": "The replacement, as one short third-person "
+                           "sentence.",
+        },
+    },
+    required=("about", "corrected"),
+)
+def _update_fact(about, corrected):
+    changed, candidates = longterm.update_fact(about, corrected)
+
+    if changed:
+        return f"Updated: {changed[0]!r} is now {changed[1]!r}"
+
+    if candidates:
+        listing = "\n".join(f"- {c}" for c in candidates)
+
+        return f"More than one could be it:\n{listing}\nAsk which one."
+
+    return (
+        f"Nothing remembered matches {about!r}, and {corrected!r} was not "
+        "saved. Use remember_fact if this is new."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Vision
+# ---------------------------------------------------------------------------
+@tool(
+    "look_at_screen",
+    "Take a screenshot of what the user is looking at and see it. Use "
+    "this whenever they refer to something on their screen - an error, "
+    "a window, a design, 'this', 'what does that say'. Do not ask them "
+    "to show you; you can look by yourself. The image arrives in the "
+    "next message.",
+    {
+        "whole_screen": {
+            "type": "boolean",
+            "description": "Leave this out for the window they're "
+                           "working in, which is nearly always what "
+                           "they mean. True only if they say the whole "
+                           "screen, or ask about two windows at once.",
+        },
+    },
+    available=vision.available,
+    why=vision.why_unavailable,
+)
+def _look_at_screen(whole_screen=False, region=None):
+    # `region` is accepted but not advertised: a model that saw the old
+    # three-way enum in its own earlier turns will keep sending it.
+    if region not in ("active", "full", "select"):
+        region = "full" if whole_screen else "active"
+    elif region == "select":
+        # Never on the model's say-so. It blocks the whole conversation
+        # on a crosshair, and "what does this say" is not a request to
+        # go hunting with the mouse - it's a request to look at what's
+        # already in front of you. /look select is there when you do
+        # actually want to point at something.
+        region = "active"
+
+    image, detail = vision.capture(region)
+
+    if image is None:
+        return f"Couldn't take a screenshot: {detail}"
+
+    return (
+        f"Screenshot taken of {detail} - it is attached to the next "
+        "message. Describe what you actually see in it; do not guess, "
+        "and say so if it isn't what they meant."
+    )
 
 
 # ---------------------------------------------------------------------------

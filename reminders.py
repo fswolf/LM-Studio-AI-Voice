@@ -26,6 +26,8 @@ import uuid
 import requests
 from datetime import datetime, timedelta
 
+import timeutil
+
 from config import (
     LM_URL,
     AGENT_NAME,
@@ -145,53 +147,30 @@ def cancel(index):
 # Formatting helpers
 # ---------------------------------------------------------------------------
 def human_delta(seconds):
-    seconds = int(max(0, seconds))
-
-    if seconds < 60:
-        return f"in {seconds}s"
-
-    minutes, seconds = divmod(seconds, 60)
-
-    if minutes < 60:
-        return f"in {minutes}m" if seconds < 30 else f"in {minutes}m {seconds}s"
-
-    hours, minutes = divmod(minutes, 60)
-
-    if hours < 24:
-        return f"in {hours}h" if not minutes else f"in {hours}h {minutes}m"
-
-    days, hours = divmod(hours, 24)
-
-    return f"in {days}d" if not hours else f"in {days}d {hours}h"
+    """Kept for callers that only have a number of seconds."""
+    return timeutil.relative(datetime.now() + timedelta(seconds=seconds))
 
 
 def describe(reminder):
+    """'tomorrow 09:00 - take the bins out (in 18 hours)'.
+
+    Named days rather than ISO timestamps, because this string is read
+    aloud as often as it is printed, and "two-oh-two-six dash zero
+    nine" is not a time anybody wants spoken at them.
+    """
     try:
         due = datetime.fromisoformat(reminder["due_at"])
     except (KeyError, ValueError):
         return reminder.get("text", "?")
 
     now = datetime.now()
-    when = due.strftime("%H:%M") if due.date() == now.date() else \
-        due.strftime("%a %d %b %H:%M")
-
     repeat = reminder.get("repeat")
-    suffix = f" (repeats {_describe_repeat(repeat)})" if repeat else ""
+    suffix = f" (repeats {timeutil.describe_repeat(repeat)})" if repeat else ""
 
     return "{} - {} ({}){}".format(
-        when, reminder.get("text", "?"),
-        human_delta((due - now).total_seconds()), suffix,
+        timeutil.friendly(due, now), reminder.get("text", "?"),
+        timeutil.relative(due, now), suffix,
     )
-
-
-def _describe_repeat(repeat):
-    if not repeat:
-        return ""
-
-    if repeat.get("unit"):
-        return f"every {repeat['amount']:g} {repeat['unit']}"
-
-    return f"daily at {repeat.get('at', '?')}"
 
 
 # ---------------------------------------------------------------------------
@@ -247,26 +226,14 @@ def _parse_json(raw):
         return None
 
 
-def _clock_today(now, hhmm):
-    """'17:00' -> a datetime today at that time."""
-    match = re.match(r"^\s*(\d{1,2})[:.](\d{2})\s*$", str(hhmm))
-
-    if not match:
-        return None
-
-    hour, minute = int(match.group(1)), int(match.group(2))
-
-    if not (0 <= hour <= 23 and 0 <= minute <= 59):
-        return None
-
-    return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-
-
 def schedule_from(data, now=None):
-    """Turn extracted fields into (due_at, repeat). Returns (None, None)
-    if the data doesn't describe a usable time.
+    """Turn the keyword extractor's fields into (due_at, repeat).
 
-    All the arithmetic lives here rather than in the model.
+    Only the fallback path reaches this now - with tools available the
+    model hands a phrase straight to timeutil.parse_when() instead of
+    choosing a "kind". The fields are reassembled into a phrase here so
+    there is exactly one implementation of the date arithmetic in the
+    app, and it is the one with tests.
     """
     now = now or datetime.now()
     kind = str(data.get("kind", "")).strip().lower()
@@ -276,38 +243,19 @@ def schedule_from(data, now=None):
         return None, None
 
     if kind in ("in", "every"):
-        try:
-            amount = float(data["amount"])
-        except (KeyError, TypeError, ValueError):
-            return None, None
+        prefix = "every" if kind == "every" else "in"
+        phrase = f"{prefix} {data.get('amount')} {data.get('unit', '')}"
+    elif kind == "at":
+        phrase = "{} at {}".format(
+            str(data.get("day", "today")).strip().lower() or "today",
+            data.get("time"),
+        )
+    elif kind == "daily":
+        phrase = f"daily at {data.get('time')}"
+    else:
+        return None, None
 
-        unit = _UNIT_MAP.get(str(data.get("unit", "")).strip().lower())
-
-        if unit is None or amount <= 0:
-            return None, None
-
-        due = now + timedelta(**{unit: amount})
-        repeat = {"amount": amount, "unit": unit} if kind == "every" else None
-
-        return due, repeat
-
-    if kind in ("at", "daily"):
-        due = _clock_today(now, data.get("time"))
-
-        if due is None:
-            return None, None
-
-        if str(data.get("day", "")).strip().lower() == "tomorrow":
-            due += timedelta(days=1)
-        elif due <= now:
-            # The time has already gone today, so they meant tomorrow.
-            due += timedelta(days=1)
-
-        repeat = {"at": due.strftime("%H:%M")} if kind == "daily" else None
-
-        return due, repeat
-
-    return None, None
+    return timeutil.parse_when(phrase, now)
 
 
 def add(text, due, repeat):
@@ -407,21 +355,28 @@ def _retire(reminder, delivered):
 
     Only called once delivery actually worked - the old code removed
     reminders before attempting delivery, so a failure lost them.
+
+    The next time comes from timeutil.next_occurrence(), which rebuilds
+    a daily reminder from the wall clock instead of adding 24 hours.
+    That is the difference between "every morning at 8" staying at 8
+    and quietly becoming 7 for the winter. It also understands weekly
+    repeats, which the old arithmetic here could not express.
+
+    It is measured from when this one was *due* rather than from now,
+    so a reminder delivered a few minutes late doesn't drag the whole
+    schedule later every time it fires.
     """
     repeat = reminder.get("repeat")
 
     if delivered and repeat:
-        now = datetime.now()
+        try:
+            anchor = datetime.fromisoformat(reminder["due_at"])
+        except (KeyError, ValueError):
+            anchor = datetime.now()
 
-        if repeat.get("unit"):
-            due = now + timedelta(**{repeat["unit"]: float(repeat["amount"])})
-        else:
-            due = _clock_today(now, repeat.get("at")) or now
-
-            while due <= now:
-                due += timedelta(days=1)
-
-        reminder["due_at"] = due.isoformat(timespec="seconds")
+        reminder["due_at"] = timeutil.next_occurrence(
+            repeat, anchor
+        ).isoformat(timespec="seconds")
         reminder["attempts"] = 0
         save()
         return

@@ -7,17 +7,21 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 import requests
 import threading
 
+import config
 from config import AGENT_NAME, VOICE, KOKORO_URL
-from speech import load_models, speak
+from speech import load_models
 from input import start_keyboard
-from llm import ask
+import assistant
 import control
 import history
 import ptt
 import reminders
 import speech
 import state
+import timeutil
 import ui
+import vision
+import wakeword
 
 
 def shutdown(code=0):
@@ -46,6 +50,9 @@ MODEL = models["data"][0]["id"]
 
 print("Loading models...")
 load_models()
+
+if wakeword.enabled() and not wakeword.load():
+    print(f"Wake word unavailable: {wakeword.label()}")
 
 ui.init(
     agent_name=AGENT_NAME,
@@ -103,16 +110,7 @@ def _process(text):
     state.stop_speaking = False
 
     try:
-        ui.set_status("Thinking...")
-        answer = ask(text, MODEL)
-        ui.add_message(AGENT_NAME.lower(), answer)
-
-        # If HOME was pressed while we were still waiting on the model
-        # (before speak() even started), don't play the response at all.
-        if not state.stop_speaking:
-            ui.set_status("Speaking...")
-            speak(answer)
-
+        assistant.respond(text, MODEL)
         ui.set_status("Idle")
     except Exception as e:
         # Without this, an LM Studio error (context overflow, bad param,
@@ -132,9 +130,7 @@ def handle_input(text):
 
     if text == "/clear":
         ui.conversation.clear()
-        history._data["messages"] = []
-        history._data["summary"] = ""
-        history.save()
+        history.clear()
         ui.render()
         return
 
@@ -174,6 +170,32 @@ def handle_input(text):
         )
         return
 
+    if text.startswith("/when"):
+        phrase = text[5:].strip()
+
+        if not phrase:
+            ui.add_message(
+                "system",
+                "Usage: /when <phrase> - e.g. /when next friday at 4pm. "
+                "Shows how the reminder parser reads it, without "
+                "scheduling anything.",
+            )
+            return
+
+        due, repeat = timeutil.parse_when(phrase)
+
+        if due is None:
+            ui.add_message("system", f"{phrase!r} -> not a time I can read.")
+        else:
+            ui.add_message(
+                "system",
+                "{!r} -> {} ({}){}".format(
+                    phrase, timeutil.friendly(due), timeutil.relative(due),
+                    f", repeats {timeutil.describe_repeat(repeat)}" if repeat else "",
+                ),
+            )
+        return
+
     if text.startswith("/mode"):
         parts = text.split()
 
@@ -206,12 +228,50 @@ def handle_input(text):
                 "Tool calling is off or unsupported by this model - "
                 "keyword triggers are handling reminders and search.",
             )
-        else:
-            import tools as tool_registry
+            return
+
+        import tools as tool_registry
+
+        lines = ["Tools she can call: " + ", ".join(tool_registry.names())]
+
+        # A tool that isn't offered is invisible otherwise, and "why
+        # didn't she look at my screen" has exactly one answer worth
+        # printing: because she wasn't told she could.
+        for name, why in tool_registry.unavailable():
+            lines.append(f"  {name} is NOT offered - {why}")
+
+        ui.add_message("system", "\n".join(lines))
+        return
+
+    if text.startswith("/look"):
+        region = text[5:].strip().lower() or "active"
+
+        if region not in ("active", "full", "select"):
             ui.add_message(
-                "system",
-                "Tools available: " + ", ".join(tool_registry.names()),
+                "system", "Usage: /look [active|full|select]"
             )
+            return
+
+        if not vision.available():
+            ui.add_message("system", f"Can't look: {vision.why_unavailable()}")
+            return
+
+        image, detail = vision.capture(region)
+
+        if image is None:
+            ui.add_message("system", f"Screenshot failed: {detail}")
+            return
+
+        # Thrown away again - this is a check that grim works and that
+        # it grabbed the right window, not a turn.
+        vision.take()
+
+        ui.add_message(
+            "system",
+            f"Captured {detail}. That's what she would have seen. "
+            "If it's the wrong window, focus the right one first or "
+            "use /look full.",
+        )
         return
 
     if text == "/mic":
@@ -238,6 +298,54 @@ def handle_input(text):
                     levels.get("mode", "?"),
                 ),
             )
+        return
+
+    if text == "/barge":
+        if not speech.barge_in_available():
+            ui.add_message(
+                "system",
+                "Barge-in is off - it needs Silero ({}), and stt.barge_in "
+                "in agent.json set to true.".format(speech.vad_backend),
+            )
+            return
+
+        levels = speech.levels
+        ui.add_message(
+            "system",
+            "barge-in on | her level at your mic={:.4f} | you need "
+            "{:.4f} to cut in | loudest you hit={:.4f} | best speech "
+            "score={:.2f}\nToo eager: raise stt.barge_in_margin. Won't "
+            "trigger: lower it, or wear headphones.".format(
+                levels["barge_baseline"],
+                levels["barge_baseline"] * config.STT_BARGE_IN_MARGIN,
+                levels["barge_peak"],
+                levels["barge_probability"],
+            ),
+        )
+        return
+
+    if text == "/wake":
+        if not wakeword.enabled():
+            ui.add_message(
+                "system",
+                'Wake word is off. Turn it on with a "wake_word" block in '
+                "agent.json - see wakeword.py for how to get a model.",
+            )
+            return
+
+        if not wakeword.available():
+            ui.add_message("system", f"Wake word not loaded: {wakeword.label()}")
+            return
+
+        ui.add_message(
+            "system",
+            'listening for "{}" | fires above {:.2f} | best score so far '
+            "{:.2f} | last frame {:.2f} | detections this session {}".format(
+                wakeword.label(), config.WAKE_WORD_THRESHOLD,
+                wakeword.scores["best"], wakeword.scores["last"],
+                wakeword.scores["detections"],
+            ),
+        )
         return
 
     if text == "/help":
