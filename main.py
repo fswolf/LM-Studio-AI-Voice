@@ -108,6 +108,7 @@ def _process(text):
 
     state.assistant_busy = True
     state.stop_speaking = False
+    state.turn_source = "typed"
 
     try:
         assistant.respond(text, MODEL)
@@ -244,60 +245,54 @@ def handle_input(text):
         return
 
     if text.startswith("/look"):
-        region = text[5:].strip().lower() or "active"
-
-        if region not in ("active", "full", "select"):
-            ui.add_message(
-                "system", "Usage: /look [active|full|select]"
-            )
-            return
+        argument = text[5:].strip()
 
         if not vision.available():
             ui.add_message("system", f"Can't look: {vision.why_unavailable()}")
             return
 
-        image, detail = vision.capture(region)
+        if argument in ("", "list", "windows"):
+            # What she'd pick, and what else she could have picked.
+            open_windows = vision.windows()
+
+            if not open_windows:
+                listing = "  (hyprctl listed nothing she can look at)"
+            else:
+                listing = "\n".join(
+                    "  {} {} - {}".format(
+                        "*" if index == 0 else " ",
+                        (w.get("class") or "?"),
+                        (w.get("title") or "")[:48],
+                    )
+                    for index, w in enumerate(open_windows[:10])
+                )
+
+            ui.add_message(
+                "system",
+                "Typed at her, \"my screen\" means the whole screen.\n"
+                "By voice, it means the focused window (* below).\n"
+                "She can also be asked for one by name:\n"
+                f"{listing}\n"
+                "Try: /look full | /look select | /look <name>",
+            )
+            return
+
+        if argument in ("full", "active", "select"):
+            region, window = argument, None
+        else:
+            region, window = "auto", argument
+
+        image, detail = vision.capture(region, window=window)
 
         if image is None:
             ui.add_message("system", f"Screenshot failed: {detail}")
             return
 
         # Thrown away again - this is a check that grim works and that
-        # it grabbed the right window, not a turn.
+        # it grabbed the right thing, not a turn.
         vision.take()
 
-        ui.add_message(
-            "system",
-            f"Captured {detail}. That's what she would have seen. "
-            "If it's the wrong window, focus the right one first or "
-            "use /look full.",
-        )
-        return
-
-    if text == "/mic":
-        levels = speech.levels
-
-        if levels.get("backend") == "silero":
-            ui.add_message(
-                "system",
-                "vad=silero | speech above {:.2f}, ends below {:.2f} | "
-                "last peak={:.4f} | triggered={} | captured={:.1f}s | mode={}".format(
-                    levels["start"], levels["continue"], levels["peak"],
-                    levels["triggered"], levels["speech_seconds"],
-                    levels.get("mode", "?"),
-                ),
-            )
-        else:
-            ui.add_message(
-                "system",
-                "vad=energy | noise floor={:.4f} | start>{:.4f} | "
-                "continue>{:.4f} | last peak={:.4f} | triggered={} | "
-                "captured={:.1f}s | mode={}".format(
-                    levels["noise_floor"], levels["start"], levels["continue"],
-                    levels["peak"], levels["triggered"], levels["speech_seconds"],
-                    levels.get("mode", "?"),
-                ),
-            )
+        ui.add_message("system", f"Captured {detail}. That's what she'd see.")
         return
 
     if text == "/barge":

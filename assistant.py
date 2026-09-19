@@ -39,12 +39,12 @@ def respond(text, model):
         )
 
         ui.replace_message(answer)
-        ui.drop_empty_message()
+        ui.end_message()
         player.wait()
 
         return answer
     except Exception:
-        ui.drop_empty_message()
+        ui.end_message()
         raise
 
 
@@ -75,6 +75,7 @@ def assistant_task(model, mode=None):
             return False
 
         ui.add_message("user", text)
+        state.turn_source = "voice"
         respond(text, model)
         ui.set_status("Idle")
 

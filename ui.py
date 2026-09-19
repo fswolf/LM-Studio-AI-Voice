@@ -115,22 +115,42 @@ def set_controls(text: str):
 
 
 def add_message(speaker: str, text: str):
-    global _scrollback
+    """Add a finished message.
+
+    If a streamed reply is open, this goes *above* it rather than at
+    the end. Tool logs arrive while she's mid-sentence, and they
+    describe something that already happened, so they belong before
+    her answer - and putting them after would leave the open message
+    no longer last, which is what extend_message relies on.
+    """
+    global _scrollback, _streaming
 
     with _lock:
-        conversation.append((speaker, text))
+        if _streaming is not None and 0 <= _streaming < len(conversation):
+            conversation.insert(_streaming, (speaker, text))
+            _streaming += 1
+        else:
+            conversation.append((speaker, text))
+
         _scrollback = 0  # a new message pulls you back to the bottom
     _refresh()
 
 
-# A streamed reply is one message that grows. The line cache keys on
-# the last tuple, so replacing it in place is enough to invalidate.
+# A streamed reply is one message that grows while other messages may
+# arrive around it. Its position is tracked explicitly rather than
+# assumed to be last, because a tool call logs a system message in the
+# middle of her sentence - and appending to conversation[-1] then put
+# her whole reply inside the system row, labelled "sys".
+_streaming = None
+
+
 def begin_message(speaker: str):
     """Open an empty message for extend_message() to fill in."""
-    global _scrollback
+    global _scrollback, _streaming
 
     with _lock:
         conversation.append((speaker, ""))
+        _streaming = len(conversation) - 1
         _scrollback = 0
     _refresh()
 
@@ -143,11 +163,11 @@ def extend_message(text: str):
         return
 
     with _lock:
-        if not conversation:
+        if _streaming is None or not 0 <= _streaming < len(conversation):
             return
 
-        speaker, existing = conversation[-1]
-        conversation[-1] = (speaker, existing + text)
+        speaker, existing = conversation[_streaming]
+        conversation[_streaming] = (speaker, existing + text)
         _scrollback = 0
     _refresh()
 
@@ -162,25 +182,36 @@ def replace_message(text: str):
     global _scrollback
 
     with _lock:
-        if not conversation:
+        if _streaming is None or not 0 <= _streaming < len(conversation):
             return
 
-        speaker, existing = conversation[-1]
+        speaker, existing = conversation[_streaming]
 
         if existing == text:
             return
 
-        conversation[-1] = (speaker, text)
+        conversation[_streaming] = (speaker, text)
         _scrollback = 0
     _refresh()
 
 
-def drop_empty_message():
-    """Remove the open message if nothing ever arrived in it."""
+def end_message():
+    """Close the open message, dropping it if nothing arrived in it."""
+    global _streaming
+
     with _lock:
-        if conversation and not conversation[-1][1].strip():
-            conversation.pop()
+        index, _streaming = _streaming, None
+
+        if index is None or not 0 <= index < len(conversation):
+            return
+
+        if not conversation[index][1].strip():
+            conversation.pop(index)
     _refresh()
+
+
+# Older name, kept so nothing breaks if it's still called somewhere.
+drop_empty_message = end_message
 
 
 def init(agent_name, model, voice, memory_status="Loaded", voice_server="unknown"):
@@ -304,7 +335,12 @@ def _conversation_lines():
     cursor goes - and re-wrapping a long history twice a frame is waste.
     """
     width = _width()
-    key = (len(conversation), width, conversation[-1] if conversation else None)
+    key = (
+        len(conversation), width,
+        conversation[-1] if conversation else None,
+        conversation[_streaming] if _streaming is not None
+        and 0 <= _streaming < len(conversation) else None,
+    )
 
     if _line_cache["key"] == key:
         return _line_cache["lines"]
@@ -449,7 +485,7 @@ _HELP_SECTIONS = [
         ("/when ...", "test how a time phrase is read"),
     ]),
     ("Session", [
-        ("/look", "test a screenshot: active|full|select"),
+        ("/look", "list windows / test a screenshot"),
         ("/tools", "which tools the model can call"),
         ("/keys", "hotkey + socket diagnostics"),
         ("/clear", "wipe conversation and saved history"),

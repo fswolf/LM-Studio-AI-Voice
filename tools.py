@@ -342,34 +342,39 @@ def _update_fact(about, corrected):
     "to show you; you can look by yourself. The image arrives in the "
     "next message.",
     {
-        "whole_screen": {
-            "type": "boolean",
-            "description": "Leave this out for the window they're "
-                           "working in, which is nearly always what "
-                           "they mean. True only if they say the whole "
-                           "screen, or ask about two windows at once.",
+        "window": {
+            "type": "string",
+            "description": "Which window, in the user's own words - "
+                           "'firefox', 'my editor', 'the music "
+                           "player'. Leave it out if they didn't say, "
+                           "and the whole screen is captured instead.",
         },
     },
     available=vision.available,
     why=vision.why_unavailable,
 )
-def _look_at_screen(whole_screen=False, region=None):
-    # `region` is accepted but not advertised: a model that saw the old
-    # three-way enum in its own earlier turns will keep sending it.
-    if region not in ("active", "full", "select"):
-        region = "full" if whole_screen else "active"
+def _look_at_screen(window=None, whole_screen=False, region=None):
+    # `region` and `whole_screen` are accepted but no longer advertised -
+    # a model that saw the older schemas in its own recent turns will
+    # keep sending them for a while.
+    if whole_screen:
+        region = "full"
     elif region == "select":
-        # Never on the model's say-so. It blocks the whole conversation
-        # on a crosshair, and "what does this say" is not a request to
-        # go hunting with the mouse - it's a request to look at what's
-        # already in front of you. /look select is there when you do
-        # actually want to point at something.
+        # Never on the model's say-so: it blocks the whole conversation
+        # on a crosshair, and "what does this say" is a request to look
+        # at what's already there, not to go hunting with the mouse.
+        # /look select exists for when you do want to point.
         region = "active"
+    elif region not in ("active", "full"):
+        region = "auto"
 
-    image, detail = vision.capture(region)
+    image, detail = vision.capture(region, window=window)
 
     if image is None:
-        return f"Couldn't take a screenshot: {detail}"
+        return (
+            f"Couldn't take a screenshot: {detail}. Tell the user this - "
+            "do not describe a screen you have not seen."
+        )
 
     return (
         f"Screenshot taken of {detail} - it is attached to the next "
