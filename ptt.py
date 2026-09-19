@@ -61,6 +61,7 @@ def hands_free_active():
 def _start_turn(model):
     state.assistant_busy = True
     state.stop_speaking = False
+    state.stop_generating = False
     state.stop_listening = False
 
     threading.Thread(
@@ -69,8 +70,10 @@ def _start_turn(model):
 
 
 def _interrupt():
+    """HOME mid-turn: shut up, stop listening, and stop generating."""
     ui.set_status("Stopped")
     state.stop_speaking = True
+    state.stop_generating = True
     state.stop_listening = True
     state.barged_in = False
 
@@ -99,6 +102,7 @@ def _hands_free_loop(model):
 
     while _hands_free:
         state.stop_speaking = False
+        state.stop_generating = False
         state.stop_listening = False
         state.barged_in = False
 
@@ -167,6 +171,7 @@ def stop_hands_free():
     # Breaks any recording currently in progress.
     state.stop_listening = True
     state.stop_speaking = True
+    state.stop_generating = True
 
     ui.set_status("Idle")
 

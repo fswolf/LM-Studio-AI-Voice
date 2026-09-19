@@ -647,6 +647,24 @@ def speak_queue(inbox, reset=True):
 # ---------------------------------------------------------------------------
 BARGE_IN_CALIBRATION_SECONDS = 0.5
 BARGE_IN_FLOOR = 0.004      # below this it's room tone, not a person
+BARGE_IN_ARM_TIMEOUT = 20.0 # give up waiting for playback to start
+
+
+def _playing():
+    """Is audio actually coming out of the speakers right now?
+
+    The distinction matters more than it sounds. The watcher starts
+    when the first sentence is handed to the TTS server, which is a
+    second or so before any sound exists - and calibrating against that
+    silence sets the baseline to the noise floor, after which her own
+    first word clears the bar and she interrupts herself. Every time.
+    """
+    try:
+        stream = sd.get_stream()
+    except Exception:
+        return False
+
+    return stream is not None and stream.active
 
 
 def _speech_probability(block):
@@ -692,11 +710,24 @@ def _watch_for_barge_in(stop):
     except Exception:
         return
 
+    waited = 0.0
+
     try:
         while not stop.is_set() and not state.stop_speaking:
             audio, _overflow = stream.read(VAD_BLOCK_SIZE)
             block = audio[:, 0].copy()
             level = _rms(block)
+
+            # Nothing to talk over yet. Keep draining the mic so the
+            # buffer doesn't go stale, but don't measure anything.
+            if not _playing():
+                if baseline is None:
+                    waited += block_seconds
+
+                    if waited > BARGE_IN_ARM_TIMEOUT:
+                        return
+
+                continue
 
             if baseline is None:
                 bleed.append(level)

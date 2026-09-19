@@ -108,6 +108,7 @@ def _process(text):
 
     state.assistant_busy = True
     state.stop_speaking = False
+    state.stop_generating = False
     state.turn_source = "typed"
 
     try:

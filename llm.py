@@ -203,6 +203,10 @@ def _timestamped(role, content, timestamp):
     return {"role": role, "content": f"[{_format_ts(timestamp)}] {content}"}
 
 
+# What the last completion actually contained, so an empty reply can be
+# explained instead of apologised for.
+_last_raw = {"deltas": 0, "content": 0, "reasoning": 0, "tool_rounds": 0}
+
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 
 # A sentence ends at .!?… plus any closing quote or bracket, followed by
@@ -385,11 +389,26 @@ def _streamed_message(payload, narrator):
     arguments spread over many - and have to be reassembled by index.
     """
     calls = {}
+    _last_raw.update({"deltas": 0, "content": 0, "reasoning": 0})
 
     for delta in _stream_deltas(payload):
-        if state.stop_speaking:
-            # HOME was pressed. Stop pulling tokens rather than
-            # generating a reply nobody is going to hear.
+        _last_raw["deltas"] += 1
+
+        # Some servers stream a reasoning model's scratchpad in its own
+        # field rather than inside <think> tags. It is never spoken, but
+        # knowing it arrived is the difference between "the model said
+        # nothing" and "the model thought and never concluded".
+        if delta.get("reasoning_content") or delta.get("reasoning"):
+            _last_raw["reasoning"] += 1
+
+        if delta.get("content"):
+            _last_raw["content"] += 1
+
+        if state.stop_generating:
+            # HOME was pressed - stop pulling tokens rather than finish
+            # a reply nobody is going to hear. Deliberately not
+            # stop_speaking: that also fires on a barge-in, and a false
+            # barge-in should cost you the audio, never the answer.
             break
 
         narrator.feed(delta.get("content") or "")
@@ -498,6 +517,7 @@ def _tool_rounds(payload, model, on_text=None, on_sentence=None):
     said = []
 
     for _round in range(MAX_TOOL_ROUNDS):
+        _last_raw["tool_rounds"] = _round + 1
         narrator = _Narrator(on_text, on_sentence)
         message = _chat_completion(payload, narrator)
         calls = message.get("tool_calls") or []
@@ -571,6 +591,36 @@ def _log_tool_call(name, result):
 
     summary = result if len(result) <= 160 else result[:157] + "..."
     ui.add_message("system", f"{name}() -> {summary}")
+
+
+def _why_empty():
+    """Best explanation for a reply that came back with no words in it."""
+    if state.stop_generating:
+        return "you interrupted it, so generation was cut short"
+
+    if state.stop_speaking:
+        return (
+            "playback was stopped mid-reply - if you didn't press HOME, "
+            "barge-in is firing on her own voice. Check /barge and raise "
+            "stt.barge_in_margin"
+        )
+
+    if _last_raw.get("reasoning") and not _last_raw.get("content"):
+        return (
+            "the model produced only reasoning and no answer - lower "
+            "generation.reasoning in agent.json, or raise max_tokens"
+        )
+
+    if _last_raw.get("tool_rounds", 0) >= MAX_TOOL_ROUNDS:
+        return (
+            f"it called tools {MAX_TOOL_ROUNDS} times without answering - "
+            "raise tools.max_rounds, or the model is stuck in a loop"
+        )
+
+    if not _last_raw.get("deltas"):
+        return "LM Studio streamed nothing at all - is the model still loaded?"
+
+    return "the model returned no usable text"
 
 
 def _generate(payload, on_text=None, on_sentence=None):
@@ -663,6 +713,10 @@ def ask(text, model, on_text=None, on_sentence=None):
     answer = _strip_leading_timestamps(answer)
 
     if not answer.strip():
+        # This used to be a bare apology, which told nobody anything.
+        # An empty reply has a small number of distinct causes and the
+        # app knows which one it hit, so say so.
+        _log_tool_call("empty reply", _why_empty())
         answer = "...sorry, I got tangled up there. Say that again?"
 
     # Stored content itself stays clean (no timestamp prefix baked in) -
