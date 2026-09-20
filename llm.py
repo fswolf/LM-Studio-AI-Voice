@@ -88,7 +88,7 @@ Chat normally when no tool is needed.
 """
 
 
-def build_system_prompt(query=""):
+def build_system_prompt(query="", timing=""):
     summary = history.get_summary()
     summary_block = f"\nEarlier conversation summary:\n{summary}\n" if summary else ""
 
@@ -102,11 +102,9 @@ You are {AGENT_NAME}.
 Right now:
 {timeutil.describe_now()}
 
-Each message below is prefixed with when it was sent, already worked
-out for you - e.g. [yesterday 21:04, 17 hours ago]. Read those; never
-calculate a date or a duration yourself, and never repeat a timestamp
-or the brackets in your own replies. If you need a date the prefixes
-do not give you, call get_datetime or time_until.
+Never calculate a date or a duration yourself - call get_datetime or
+time_until instead.
+{timing}
 
 Personality:
 {PERSONALITY}
@@ -217,13 +215,183 @@ def _strip_leading_timestamps(text):
 
 
 def _timestamped(role, content, timestamp):
-    return {"role": role, "content": f"[{_format_ts(timestamp)}] {content}"}
+    """A history message, with no timestamp in it.
+
+    It used to carry one - "[today 14:32, 17 minutes ago] ..." - so the
+    model could judge elapsed time. That backfired twice. First she read
+    the prefix aloud, because it was in the text and the text gets
+    spoken. Then /tooltest found the real cost: with history attached
+    she stopped calling tools entirely and answered in prose beginning
+    with a timestamp of her own.
+
+    Which makes sense. Every assistant message in history is prose, none
+    of them are tool calls, and they all start the same way - so the
+    history is a few-shot demonstration that the job is producing text
+    in that shape. In-context examples beat instructions, and there were
+    fifteen examples against one instruction.
+
+    The timing information moves to _timing_note(), which states it once
+    in the system prompt where there is no pattern to copy.
+    """
+    return {"role": role, "content": content}
+
+
+def _replay(message):
+    """One stored turn, as the messages the model should see.
+
+    A turn that used tools becomes three messages rather than one - the
+    assistant asking, the result coming back, the assistant answering -
+    which is the shape the API defines and, more to the point, an
+    example of the behaviour we want repeated. Without these the
+    history only ever demonstrates talking.
+    """
+    calls = message.get("tools") or []
+
+    if not calls:
+        return [_timestamped(message["role"], message["content"],
+                             message.get("timestamp"))]
+
+    replayed = [{
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": f"past{index}",
+                "type": "function",
+                "function": {
+                    "name": call.get("name", ""),
+                    "arguments": call.get("arguments", "{}") or "{}",
+                },
+            }
+            for index, call in enumerate(calls)
+        ],
+    }]
+
+    for index, call in enumerate(calls):
+        replayed.append({
+            "role": "tool",
+            "tool_call_id": f"past{index}",
+            "name": call.get("name", ""),
+            "content": call.get("result", ""),
+        })
+
+    if message.get("content"):
+        replayed.append({"role": message["role"], "content": message["content"]})
+
+    return replayed
+
+
+def _demonstration():
+    """One worked tool call, for a history that contains none.
+
+    _replay solves the problem going forward: once a turn in history
+    used a tool, the model can see that tools get used. It does nothing
+    for the hole it has to climb out of first. A fresh install, a
+    cleared history, or the transcript this app has been accumulating
+    all day are all the same situation - fifteen examples of answering
+    in prose, zero of calling anything - and that is the state the
+    bisect showed breaking tool calling outright.
+
+    So when the window has no example in it, one is supplied. Not a
+    fabricated one: the tool is actually called and the real result
+    goes in, which costs nothing (get_datetime is local and instant)
+    and has the side effect of putting the current time in front of her
+    without a round trip. It disappears on its own the moment history
+    has a real exchange to show instead.
+    """
+    try:
+        result = tools.call("get_datetime", "{}")
+    except Exception:
+        return []
+
+    if not result:
+        return []
+
+    now = datetime.now()
+
+    return [
+        {"role": "user", "content": "what time is it?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "example0",
+                "type": "function",
+                "function": {"name": "get_datetime", "arguments": "{}"},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "example0",
+            "name": "get_datetime",
+            "content": result,
+        },
+        {
+            "role": "assistant",
+            "content": f"It's {now.strftime('%H:%M')} on {now.strftime('%A')}.",
+        },
+    ]
+
+
+def _has_tool_example(messages):
+    return any(m.get("tool_calls") for m in messages)
+
+
+def _timing_note(messages):
+    """When the conversation below happened, said once.
+
+    Replaces the per-message prefixes. Same information, stated as a
+    fact rather than demonstrated fifteen times in the shape of a reply.
+    """
+    stamps = []
+
+    for message in messages:
+        try:
+            stamps.append(datetime.fromisoformat(str(message.get("timestamp"))))
+        except (ValueError, TypeError):
+            continue
+
+    if not stamps:
+        return ""
+
+    now = datetime.now()
+    started = timeutil.relative(stamps[0], now)
+    latest = timeutil.relative(stamps[-1], now)
+
+    if len(stamps) > 1 and started != latest:
+        opening = (f"the most recent message was {latest}, "
+                   f"and it began {started}.")
+    else:
+        opening = f"the most recent message was {latest}."
+
+    note = [
+        "",
+        "The conversation below carries no timestamps. For reference: "
+        + opening,
+    ]
+
+    # A long silence in the middle is the thing worth knowing about - it
+    # is the difference between one conversation and two.
+    if len(stamps) > 1:
+        gaps = [(stamps[i + 1] - stamps[i], i) for i in range(len(stamps) - 1)]
+        longest, where = max(gaps, default=(None, 0))
+
+        if longest and longest.total_seconds() > 3600:
+            span = timeutil.relative(
+                stamps[where] + longest, stamps[where]
+            ).replace("in ", "")
+            note.append(
+                f"There is a gap of {span} partway through it - what "
+                "follows the gap is a later conversation."
+            )
+
+    return "\n".join(note) + "\n"
 
 
 # What the last completion actually contained, so an empty reply can be
 # explained instead of apologised for.
 _last_raw = {"deltas": 0, "content": 0, "reasoning": 0, "tool_rounds": 0,
-             "called": set()}
+             "called": set(), "exchanges": []}
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 
@@ -594,6 +762,7 @@ def _tool_rounds(payload, model, on_text=None, on_sentence=None):
 
     streaming = bool(on_text or on_sentence)
     _last_raw["called"] = set()
+    _last_raw["exchanges"] = []
 
     # A round can produce prose *and* a tool call ("let me check that
     # for you" followed by get_datetime). That preamble is spoken and
@@ -635,6 +804,9 @@ def _tool_rounds(payload, model, on_text=None, on_sentence=None):
             logbook.info("tools", "%s(%s)", name, str(arguments)[:300])
             result = tools.call(name, arguments)
             logbook.info("tools", "%s -> %s", name, str(result)[:300])
+            _last_raw["exchanges"].append(
+                {"name": name, "arguments": arguments, "result": result}
+            )
 
             _log_tool_call(name, result)
 
@@ -735,13 +907,26 @@ def ask(text, model, on_text=None, on_sentence=None):
 
     now = datetime.now()
 
-    messages = [{"role": "system", "content": build_system_prompt(text)}]
+    past = history.get_messages_full()
+    messages = [{
+        "role": "system",
+        "content": build_system_prompt(text, _timing_note(past)),
+    }]
 
     # get_messages_full() keeps each message's stored timestamp, so
     # the model can see how much time passed between past turns too,
     # not just how old the newest message is.
-    for m in history.get_messages_full():
-        messages.append(_timestamped(m["role"], m["content"], m.get("timestamp", "unknown time")))
+    replayed = []
+
+    for m in past:
+        replayed.extend(_replay(m))
+
+    # Ahead of history, so it reads as the oldest thing in the window
+    # and anything real that follows takes precedence over it.
+    if _tools_supported and not _has_tool_example(replayed):
+        messages.extend(_demonstration())
+
+    messages.extend(replayed)
 
     # Folded into the *user* turn's content rather than a second
     # "system" message - some chat templates (Jinja-based, incl. this
@@ -828,7 +1013,7 @@ def ask(text, model, on_text=None, on_sentence=None):
     # source of truth and formatting can change later without rewriting
     # anything already saved to disk.
     history.add_message("user", text)
-    history.add_message("assistant", answer)
+    history.add_message("assistant", answer, tools=_last_raw.get("exchanges"))
 
     # The same turns, to a file summarization never touches. history.py
     # deletes these once they're folded into the summary; this is what

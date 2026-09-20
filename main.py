@@ -108,6 +108,10 @@ for msg in history.get_messages():
     speaker = "user" if msg["role"] == "user" else AGENT_NAME.lower()
     ui.conversation.append((speaker, msg["content"]))
 
+# Whatever was chosen last time - the setting exists so the preference
+# survives a restart, not just the session.
+ui.toggle_mouse(config.UI_MOUSE)
+
 ui.set_mode(ptt.mode())
 ui.set_status("Loading speech...")
 ui.set_model(lmstudio.label())
@@ -420,6 +424,103 @@ def handle_input(text):
                     levels.get("mode", "?"),
                 ),
             )
+        return
+
+    if text == "/tooltest":
+        ui.add_message(
+            "system",
+            "Running the tool-calling check - ten requests, a minute or "
+            "two on a local model. Results appear as they finish. "
+            "Nothing is scheduled or remembered.",
+        )
+
+        def check():
+            import diagnose
+
+            def show(line):
+                # One message per line, as it happens - a local model
+                # takes long enough that waiting for the whole report
+                # looks identical to a hang.
+                if line.strip():
+                    ui.add_message("system", line)
+                    logbook.info("diagnose", "%s", line)
+
+            try:
+                lines = diagnose.tool_calling(MODEL, report=show)
+
+                # A clean sweep is the interesting case: the model can
+                # call tools, but doesn't when it matters. The only
+                # thing left between the probe and a real turn is the
+                # prompt, so bisect it.
+                if any("healthy here" in line for line in lines):
+                    show("")
+                    diagnose.prompt_bisect(MODEL, report=show)
+            except Exception as e:
+                logbook.exception("diagnose", "tool check failed")
+                ui.add_message("system", f"Tool check failed: {e}")
+
+        threading.Thread(target=check, daemon=True).start()
+        return
+
+    if text == "/repair":
+        ui.add_message(
+            "system",
+            "Looking for past reminders that were set by the fallback and "
+            "never recorded as tool calls. Nothing new gets scheduled and "
+            "nothing she said is changed.",
+        )
+
+        def repair():
+            import reminders
+
+            def show(line):
+                if line.strip():
+                    ui.add_message("system", line)
+                    logbook.info("repair", "%s", line)
+
+            try:
+                fixed = reminders.repair_history(MODEL, report=show)
+
+                if fixed:
+                    ui.add_message(
+                        "system",
+                        f"Repaired {fixed} turn{'s' if fixed != 1 else ''}. "
+                        "History now shows the tool being used instead of "
+                        "talked about - run /tooltest to see the difference.",
+                    )
+                else:
+                    ui.add_message(
+                        "system",
+                        "Nothing to repair - every reminder turn in history "
+                        "already records what it called.",
+                    )
+            except Exception as e:
+                logbook.exception("repair", "history repair failed")
+                ui.add_message("system", f"Repair failed: {e}")
+
+        threading.Thread(target=repair, daemon=True).start()
+        return
+
+    if text.startswith("/mouse"):
+        argument = text[6:].strip().lower()
+        wanted = {"on": True, "true": True, "yes": True,
+                  "off": False, "false": False, "no": False}.get(argument)
+
+        on = ui.toggle_mouse(wanted)
+
+        try:
+            config.save_setting("ui.mouse", on)
+            saved = " (saved)"
+        except Exception:
+            saved = ""
+
+        ui.add_message(
+            "system",
+            ("Mouse capture on - the wheel scrolls, but text can't be "
+             "selected." if on else
+             "Mouse capture off - select and copy normally; PgUp/PgDn "
+             "scroll.") + saved,
+        )
         return
 
     if text.startswith("/log"):

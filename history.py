@@ -96,13 +96,86 @@ def get_messages_full() -> list:
         return list(_data.get("messages", []))
 
 
-def add_message(role: str, content: str):
+# Tool results can be long - a page of search results, a whole reminder
+# list. Only enough is kept to show the shape of the exchange.
+MAX_STORED_RESULT = 200
+
+
+def add_message(role: str, content: str, tools=None):
+    """Record a turn, and what it called to get there.
+
+    `tools` is the interesting part. Storing only the prose meant the
+    history was fifteen examples of "reply in words" and none of
+    "call a tool" - so a small model, which learns far more from
+    examples in front of it than from instructions above them, would
+    read its own transcript and conclude that answering in prose is
+    the job. It would then say "Got it, setting that for you!" and
+    call nothing.
+    """
+    entry = {
+        "role": role,
+        "content": content,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+    }
+
+    if tools:
+        entry["tools"] = [
+            {
+                "name": call.get("name", ""),
+                "arguments": str(call.get("arguments", ""))[:MAX_STORED_RESULT],
+                "result": str(call.get("result", ""))[:MAX_STORED_RESULT],
+            }
+            for call in tools
+        ]
+
     with _lock:
-        _data.setdefault("messages", []).append({
-            "role": role,
-            "content": content,
-            "timestamp": datetime.now().isoformat(timespec="seconds"),
-        })
+        _data.setdefault("messages", []).append(entry)
+
+
+def record_tool_use(name, arguments, result, index=None):
+    """Attach a tool exchange to an assistant turn - by default the
+    latest one, or `index` for a specific one when repairing the past.
+
+    add_message() covers the normal case, where the model called the
+    tool itself and the exchange is in hand when the reply is stored.
+    The reminder fallback is the other case: it runs on a worker, after
+    the reply has already been written, and it is precisely the turn
+    history most needs an example of - one where a tool should have
+    been called and wasn't.
+
+    Without this the rescue leaves no trace. The history goes on
+    demonstrating that the job is prose, so the next reminder needs
+    rescuing too, and the next. Recording it is what lets the pattern
+    bootstrap out of the hole it's in.
+    """
+    call = {
+        "name": name,
+        "arguments": str(arguments)[:MAX_STORED_RESULT],
+        "result": str(result)[:MAX_STORED_RESULT],
+    }
+
+    with _lock:
+        messages = _data.get("messages", [])
+
+        if index is not None:
+            if not 0 <= index < len(messages):
+                return False
+
+            if messages[index].get("role") != "assistant":
+                return False
+
+            messages[index].setdefault("tools", []).append(call)
+        else:
+            for entry in reversed(messages):
+                if entry.get("role") == "assistant":
+                    entry.setdefault("tools", []).append(call)
+                    break
+            else:
+                return False
+
+    save()
+
+    return True
 
 
 def clear():

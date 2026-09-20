@@ -334,10 +334,32 @@ an annoyance.
 | Enter | Send typed message |
 | Tab | Open / close the help panel |
 | PgUp / PgDn | Scroll the conversation |
+| F2 | Toggle mouse capture — see below |
 | End | Jump back to the newest message |
 | Esc | Quit |
 
 <img width="1210" alt="Help panel" src="assets/ui-help.png" />
+
+## Selecting text
+
+Mouse capture is **off** by default, so you can select and copy from the
+conversation the way you would anywhere else.
+
+The two are mutually exclusive, not a bug: turning on mouse support
+enables terminal mouse reporting, which means the terminal hands drags
+to the application instead of making a selection. You get wheel
+scrolling and lose copy-paste. In a window full of log lines and error
+messages that's the wrong trade, and PgUp/PgDn/End already scroll.
+
+`F2` swaps between them live, and `/mouse` does the same while also
+remembering the choice:
+
+```json
+"ui": { "mouse": false }
+```
+
+Most terminals also let you hold **Shift** while dragging to bypass
+mouse reporting, so you can select even with capture on.
 
 Slash commands:
 
@@ -352,8 +374,11 @@ Slash commands:
 | `/when ...` | Test how a time phrase is read, without scheduling it |
 | `/look` | List windows, or test a screenshot |
 | `/log` | Tail the debug log without leaving the app |
+| `/mouse` | Wheel scrolling vs. being able to select text |
 | `/set` | List every setting, or change one — saved to `config.json` |
 | `/tools` | Which tools the model can call — and which it can't, and why |
+| `/tooltest` | Whether this model *actually* calls them |
+| `/repair` | Record past reminders as the tool calls they really were |
 | `/keys` | Hotkey + socket diagnostics |
 | `/clear` | Wipe the conversation and saved history |
 | `/quit` | Exit |
@@ -641,6 +666,129 @@ a reminder appeared:
 sys  │ set_reminder() -> Scheduled: 14:40 - stretch (in 10m)
 ```
 
+## Checking a model actually calls them
+
+Offering tools and using them are different things. A model will
+happily say "Got it, setting that for you!" and call nothing, which
+fails silently and totally — a confident confirmation and nothing
+scheduled.
+
+`/tooltest` asks it directly. Five blunt requests, each run twice —
+streamed and blocking — reporting what came back:
+
+```
+  "remind me in 5 minutes to eat chocolate"
+    expecting set_reminder
+    streamed  ok           text='eat chocolate', when='in 5 minutes'
+    blocking  ok           text='eat chocolate', when='in 5 minutes'
+
+  streamed 5/5   blocking 5/5
+  Tool calling is healthy here.
+```
+
+Nothing is scheduled or remembered — the model is asked what it *would*
+call and the answers are discarded.
+
+The two modes are the diagnosis. Tool calls arrive whole in a blocking
+response and in fragments when streamed, so comparing them says whose
+fault a failure is:
+
+| Result | Means |
+|--------|-------|
+| both high | healthy |
+| blocking beats streamed | this app is mis-reassembling streamed calls |
+| both zero | the model isn't choosing tools at all |
+| zero-arg tools pass, others fail | its tool template can't handle argument schemas |
+| `bad json` | it emits arguments that don't parse |
+
+That last pair are worth knowing about before blaming the prompt. Run
+it after swapping models; it takes about twenty seconds.
+
+### When the model passes the test and still won't call anything
+
+That happened here, and it is worth writing down because the cause was
+not where anyone would look for it.
+
+`/tooltest` said 5/5 on both transports. In conversation, the same
+model on the same day said "Got it, setting that for you!" and called
+nothing. The difference between the two is everything `/tooltest`
+leaves out — so the second half of `/tooltest` puts it back, one layer
+at a time, and runs the same probe at each:
+
+```
+  bare instruction           145ch  ok   text='eat chocolate', when='in 5 minutes'
+  + her personality          957ch  ok   text='eat chocolate', when='in 5 minutes'
+  + tools guidance          2091ch  ok   text='eat chocolate', when='in 5 minutes'
+  + remembered facts        3580ch  ok   text='eat chocolate', when='in 5 minutes'
+  + the real system prompt  6222ch  ok   text='eat chocolate', when='in 5 minutes'
+  + generation settings     6222ch  ok   text='eat chocolate', when='in 5 minutes'
+  + conversation history    8870ch  just talked   Mrrp~ Senpai! Got it! Setting a reminder
+```
+
+The prompt was fine. Every layer of it was fine. **The history was the
+problem** — and specifically, what was in it:
+
+```
+user      reminds me in 5 mins to eat chocolate
+assistant Mrrp~ Senpai! 💜✨ Got it! Setting a reminder for you in exactly five...
+user      set a reminder 1 hour i need to eat more cheetos
+assistant Mrrp~ Senpai! 💜✨ Setting a reminder for you in exactly one hour to...
+user      remind me in 5 mins to look at your code
+assistant Mrrp~ Senpai! 💜✨ Got it! Setting a reminder for you in exactly five...
+```
+
+Five turns, none of them recording a tool call, one of them *the probe
+sentence verbatim*. That is not a vague stylistic pull toward prose. It
+is five worked examples of this exact request being answered by talking
+about it — and in-context examples beat instructions, especially on a
+small model. The instruction to call `set_reminder` was outvoted five
+to one by the transcript of it not being called.
+
+The reminders were all genuinely set, incidentally. The keyword
+fallback below caught every one. It just left no trace, so the model
+never saw that a tool had been involved.
+
+Three things follow, and all three are in the app:
+
+* **Tool use is stored and replayed.** A turn that called a tool is
+  written to `history/conversation.json` with what it called and what
+  came back, and replayed into the prompt as the three messages the API
+  defines — the assistant asking, the result, the assistant answering.
+  History demonstrates tool use because it contains tool use.
+* **A rescued reminder records itself.** The fallback now writes the
+  `set_reminder` call it stood in for, so a rescue teaches instead of
+  quietly patching. This is what stops the hole being dug again.
+* **`/repair` fills in the ones already there.** Past reminder turns are
+  re-read through the same extractor and recorded as the calls they
+  really were, anchored to when they happened — so "in 5 minutes" means
+  five minutes after it was said, not five minutes from now. Nothing
+  new is scheduled and nothing she said is altered; the only change is
+  that a turn which used a tool now says so.
+
+```
+/repair
+  reminds me in 5 mins to eat chocolate      -> set_reminder(in 5 minutes)
+  set a reminder 1 hour i need to eat cheet  -> set_reminder(in 1 hours)
+  remind me in 5 mins to look at your code   -> set_reminder(in 5 minutes)
+  Repaired 3 turns.
+```
+
+`/tooltest` counts the unrecorded claims and points at `/repair` when
+it finds them, so the report names the actual cause rather than
+"history breaks it".
+
+There is also a worked example — one real `get_datetime` call, result
+and all — inserted ahead of history when the window contains no tool
+call at all. It covers a fresh install or a `/clear`, and it drops out
+by itself once a real exchange replaces it. It is a floor, not a fix:
+one generic example does not outvote five specific ones, which is
+exactly what the run above showed.
+
+As a safety net, a turn that looks like a reminder but calls no
+reminder tool falls back to the keyword extractor, so a model that
+won't call `set_reminder` still schedules reminders. `/log` records
+each rescue — if that line is frequent, `/tooltest` will say why.
+
 Needs a model with a tool template — Qwen, Llama 3.1+, Mistral, Hermes
 and similar. If LM Studio rejects the payload, tool calling switches off
 for the session and the original keyword triggers take over, so loading
@@ -855,6 +1003,31 @@ the limit isn't the one that pays for it.
 }
 ```
 
+Stored turns carry what they called, not just what they said:
+
+```json
+{
+  "role": "assistant",
+  "content": "Done, cutie.",
+  "timestamp": "2026-09-20T00:00:12",
+  "tools": [{
+    "name": "set_reminder",
+    "arguments": "{\"text\": \"eat chocolate\", \"when\": \"in 5 minutes\"}",
+    "result": "Scheduled: today 00:05 - eat chocolate (in 5 minutes)"
+  }]
+}
+```
+
+Results are truncated to 200 characters — enough to show the shape of
+the exchange, not enough for a page of search results to eat the
+context. On the way back into the prompt each of these becomes three
+messages rather than one, which is both what the API expects and, more
+to the point, an example of the behaviour worth repeating; see
+[when the model passes the test and still won't call
+anything](#when-the-model-passes-the-test-and-still-wont-call-anything).
+Entries written before this existed have no `tools` key and replay as
+plain messages, so nothing needs converting.
+
 ---
 
 # Logging
@@ -1021,6 +1194,7 @@ ai-voice/
 ├── config.json
 ├── config.py
 ├── control.py
+├── diagnose.py
 ├── history.py
 ├── kokoro-say.py
 ├── llm.py

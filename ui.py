@@ -65,6 +65,15 @@ _conv_window = None
 _scrollback = 0  # lines scrolled up from the bottom; 0 = pinned to latest
 _help_visible = False
 
+# Mouse capture is off by default, and that is a deliberate trade.
+# prompt_toolkit's mouse support gives you wheel scrolling, but it turns
+# on terminal mouse reporting - which means the terminal hands drags to
+# the application instead of doing its own text selection. You lose
+# copy and paste entirely, which matters far more in a window full of
+# log lines and error messages than scrolling does, especially when
+# PgUp/PgDn/End already scroll.
+_mouse = False
+
 
 # ---------------------------------------------------------------------------
 # State updates - all thread-safe, all just repaint
@@ -212,6 +221,20 @@ def end_message():
 
 # Older name, kept so nothing breaks if it's still called somewhere.
 drop_empty_message = end_message
+
+
+def mouse_enabled():
+    return _mouse
+
+
+def toggle_mouse(on=None):
+    """Swap between wheel scrolling and being able to select text."""
+    global _mouse
+
+    _mouse = (not _mouse) if on is None else bool(on)
+    _refresh()
+
+    return _mouse
 
 
 def set_model(label: str):
@@ -476,6 +499,7 @@ _HELP_SECTIONS = [
         ("(HOME)", None),  # filled in from the current mode
         ("(Enter)", "send message"),
         ("(PgUp/PgDn)", "scroll the conversation"),
+        ("(F2)", "mouse capture: wheel scroll vs selecting text"),
         ("(End)", "jump back to newest"),
         ("(Tab)", "close this window"),
         ("(ESC)", "quit"),
@@ -494,8 +518,11 @@ _HELP_SECTIONS = [
     ("Session", [
         ("/look", "list windows / test a screenshot"),
         ("/log", "tail the debug log"),
+        ("/mouse", "same as F2, and saves the choice"),
         ("/set", "list or change any setting, saved"),
         ("/tools", "which tools the model can call"),
+        ("/tooltest", "does this model actually call them?"),
+        ("/repair", "record past reminders as the calls they were"),
         ("/keys", "hotkey + socket diagnostics"),
         ("/clear", "wipe conversation and saved history"),
         ("/quit", "exit"),
@@ -615,6 +642,21 @@ def _build_keys():
         # box, which is what we want - Ctrl+A still does that.
         if _on_hotkey:
             _on_hotkey()
+
+    @keys.add("f2")
+    def _(event):
+        # Mouse capture on means the wheel scrolls; off means the
+        # terminal can select text again. You can't have both, because
+        # the terminal hands drags to whoever asked for them.
+        on = toggle_mouse()
+        add_message(
+            "system",
+            "Mouse capture on - the wheel scrolls, but you can't select "
+            "text. F2 again to swap back."
+            if on else
+            "Mouse capture off - select and copy normally. PgUp/PgDn "
+            "scroll; F2 to get the wheel back.",
+        )
 
     @keys.add("tab")
     def _(event):
@@ -748,7 +790,8 @@ def run(on_submit, on_hotkey=None):
         key_bindings=_build_keys(),
         style=_build_style(),
         full_screen=True,
-        mouse_support=True,
+        # A filter, not a flag, so it can be toggled without a restart.
+        mouse_support=Condition(lambda: _mouse),
     )
 
     # First paint has no render_info, so the scroll lands at line one and

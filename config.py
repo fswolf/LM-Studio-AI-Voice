@@ -115,6 +115,15 @@ CONTROL_SOCKET = os.environ.get(
 )
 
 # -------------------------
+# TUI
+# -------------------------
+# Mouse capture gives wheel scrolling at the cost of text selection -
+# the terminal can only hand drags to one of them. Off by default,
+# because a window full of log lines you can't copy is worse than one
+# you scroll with PgUp.
+UI_MOUSE = bool(setting("ui", {}).get("mouse", False))
+
+# -------------------------
 # TUI theme
 # -------------------------
 # MewNix Candy by default. Override any subset in agent.json:
@@ -379,6 +388,8 @@ SETTINGS = {
     "tts.speed":                  ("TTS_SPEED",                    True),
     "tts.volume":                 ("TTS_VOLUME",                   True),
     "tts.url":                    ("TTS_URL",                      False),
+
+    "ui.mouse":                   ("UI_MOUSE",                     True),
 
     "logging.enabled":            ("LOG_ENABLED",                  False),
     "logging.level":              ("LOG_LEVEL",                    False),

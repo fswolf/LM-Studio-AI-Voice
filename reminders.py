@@ -151,19 +151,23 @@ def human_delta(seconds):
     return timeutil.relative(datetime.now() + timedelta(seconds=seconds))
 
 
-def describe(reminder):
+def describe(reminder, now=None):
     """'tomorrow 09:00 - take the bins out (in 18 hours)'.
 
     Named days rather than ISO timestamps, because this string is read
     aloud as often as it is printed, and "two-oh-two-six dash zero
     nine" is not a time anybody wants spoken at them.
+
+    `now` is for describing a reminder as it read at some other moment -
+    repairing history needs "in 5 minutes" as it was then, not as it
+    would be now.
     """
     try:
         due = datetime.fromisoformat(reminder["due_at"])
     except (KeyError, ValueError):
         return reminder.get("text", "?")
 
-    now = datetime.now()
+    now = now or datetime.now()
     repeat = reminder.get("repeat")
     suffix = f" (repeats {timeutil.describe_repeat(repeat)})" if repeat else ""
 
@@ -245,27 +249,42 @@ def schedule_from(data, now=None):
     there is exactly one implementation of the date arithmetic in the
     app, and it is the one with tests.
     """
-    now = now or datetime.now()
-    kind = str(data.get("kind", "")).strip().lower()
-    text = str(data.get("text", "")).strip()
+    phrase = phrase_from(data)
 
-    if not text:
+    if phrase is None:
         return None, None
+
+    return timeutil.parse_when(phrase, now or datetime.now())
+
+
+def phrase_from(data):
+    """The extractor's fields, back as the words a person would say.
+
+    Split out of schedule_from() because the phrase is worth having on
+    its own: it is what set_reminder's `when` argument would have been
+    had the model called the tool, and recording it is what turns a
+    rescued reminder into an example for next time.
+    """
+    kind = str(data.get("kind", "")).strip().lower()
+
+    if not str(data.get("text", "")).strip():
+        return None
 
     if kind in ("in", "every"):
         prefix = "every" if kind == "every" else "in"
-        phrase = f"{prefix} {data.get('amount')} {data.get('unit', '')}"
-    elif kind == "at":
-        phrase = "{} at {}".format(
+
+        return f"{prefix} {data.get('amount')} {data.get('unit', '')}"
+
+    if kind == "at":
+        return "{} at {}".format(
             str(data.get("day", "today")).strip().lower() or "today",
             data.get("time"),
         )
-    elif kind == "daily":
-        phrase = f"daily at {data.get('time')}"
-    else:
-        return None, None
 
-    return timeutil.parse_when(phrase, now)
+    if kind == "daily":
+        return f"daily at {data.get('time')}"
+
+    return None
 
 
 def add(text, due, repeat):
@@ -291,23 +310,13 @@ def _extract_reminder(model, text):
     import ui
 
     try:
-        response = requests.post(
-            LM_URL,
-            json={
-                "model": model,
-                "messages": [{"role": "user", "content": _PROMPT % text}],
-            },
-            timeout=60,
-        )
-        raw = response.json()["choices"][0]["message"]["content"].strip()
+        raw, data = _extract_fields(model, text)
     except Exception as e:
         ui.add_message("system", f"Couldn't check that for a reminder: {e}")
         return
 
     if raw.upper().startswith("NONE"):
         return  # not a reminder; nothing to report
-
-    data = _parse_json(raw)
 
     if data is None:
         ui.add_message(
@@ -331,6 +340,145 @@ def _extract_reminder(model, text):
 
     # The whole point of the rewrite: say so, out loud, every time.
     ui.add_message("system", f"Reminder set - {describe(reminder)}")
+
+    # And write it into history as the tool call it should have been.
+    # This path only runs when the model *didn't* call set_reminder, so
+    # left alone it teaches the opposite of what we want: another turn
+    # of prose that happened to work out. Recorded, it becomes the
+    # example that stops the next one needing rescuing.
+    _record_as_tool_call(data, reminder)
+
+
+def _record_as_tool_call(data, reminder):
+    import history
+
+    phrase = phrase_from(data)
+
+    if not phrase:
+        return
+
+    try:
+        history.record_tool_use(
+            "set_reminder",
+            json.dumps(
+                {"text": str(data.get("text", "")).strip(), "when": phrase}
+            ),
+            f"Scheduled: {describe(reminder)}",
+        )
+    except Exception:
+        pass  # bookkeeping; never worth losing a set reminder over
+
+
+def _extract_fields(model, text, timeout=60):
+    """The extractor's answer, as (raw_reply, fields_or_None).
+
+    The raw reply comes back too because "NONE" and "that wasn't JSON"
+    mean different things to the caller - one is a non-reminder and
+    says nothing, the other is worth complaining about.
+    """
+    response = requests.post(
+        LM_URL,
+        json={"model": model,
+              "messages": [{"role": "user", "content": _PROMPT % text}]},
+        timeout=timeout,
+    )
+    raw = response.json()["choices"][0]["message"]["content"].strip()
+
+    if raw.upper().startswith("NONE"):
+        return raw, None
+
+    return raw, _parse_json(raw)
+
+
+# The app writes this itself when a reminder comes due, so a turn that
+# starts with it is a delivery, not a request - repairing it would
+# record a reminder that was never asked for.
+_DELIVERY = ("(this is a reminder you set earlier",
+             "(these reminders came due")
+
+
+def repair_history(model, report=None):
+    """Rewrite past reminder turns as the tool calls they really were.
+
+    Every reminder request answered before tool use was recorded looks,
+    in history, like a turn where the right thing to do was to say
+    "Got it, setting that for you!" and call nothing. It is the most
+    convincing possible demonstration of the exact failure, and with
+    several of them in the window a single counter-example does not
+    come close to outvoting them.
+
+    They are not lies, though - the keyword fallback really did schedule
+    those reminders, it just left no trace. So this reconstructs the
+    trace: the user's own words back through the same extractor, the
+    same date arithmetic, but anchored to when the turn happened rather
+    than now, so "in 5 minutes" means five minutes after he said it.
+
+    Nothing new is scheduled and nothing she said is altered. The only
+    change is that a turn which used a tool now says so.
+    """
+    import history
+
+    def say(line):
+        if report:
+            report(line)
+
+    messages = history.get_messages_full()
+    repaired = 0
+
+    for index, message in enumerate(messages):
+        if message.get("role") != "assistant" or message.get("tools"):
+            continue
+
+        if index == 0 or messages[index - 1].get("role") != "user":
+            continue
+
+        asked = str(messages[index - 1].get("content", ""))
+
+        if not _looks_like_reminder(asked):
+            continue
+
+        if asked.strip().lower().startswith(_DELIVERY):
+            continue
+
+        try:
+            _raw, data = _extract_fields(model, asked)
+        except Exception as e:
+            say(f"  couldn't re-read {asked[:40]!r}: {e}")
+            continue
+
+        if not data:
+            continue
+
+        # The turn's own timestamp is the reference, so the reminder is
+        # described as it was described then.
+        try:
+            then = datetime.fromisoformat(str(message.get("timestamp")))
+        except (TypeError, ValueError):
+            then = datetime.now()
+
+        due, repeat = schedule_from(data, then)
+        phrase = phrase_from(data)
+
+        if due is None or not phrase:
+            continue
+
+        text = str(data.get("text", "")).strip()
+        shown = describe(
+            {"text": text, "due_at": due.isoformat(timespec="seconds"),
+             "repeat": repeat},
+            now=then,
+        )
+
+        if history.record_tool_use(
+            "set_reminder",
+            json.dumps({"text": text, "when": phrase}),
+            f"Scheduled: {shown}",
+            index=index,
+        ):
+            repaired += 1
+            say(f"  {asked[:46]:48} -> set_reminder({phrase})")
+
+    return repaired
 
 
 def extract_in_background(model, text):
