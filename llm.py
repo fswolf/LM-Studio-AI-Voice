@@ -214,6 +214,20 @@ _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 # being spoken as two sentences.
 _SENTENCE_END = re.compile(r"[.!?…]['\"\u201d\u2019)\]]*\s")
 
+# A timestamp prefix at the very start of a reply, which is the model
+# copying the format of its own input back at us. Matched here rather
+# than reusing _strip_leading_timestamps() because that one ends in
+# .strip(), and a partial prefix with a trailing space then looks like a
+# successful match - which settles the question a character too early
+# and lets the rest of the timestamp through.
+_LEADING_STAMP = re.compile(
+    r"^\s*(?:"
+    r"\[\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}\]\s*"
+    r"|\[(?:today|tomorrow|yesterday|last \w+|\w{3} \d)[^\]]{0,48}\]\s*"
+    r")+",
+    re.IGNORECASE,
+)
+
 # The shortest fragment worth sending to the TTS server on its own.
 # Below this it's an interjection, and the pause around it sounds worse
 # than waiting for the rest of the line - so it rides along with the
@@ -275,19 +289,58 @@ class _Narrator:
     roughly one sentence's worth.
     """
 
+    # The longest a leading "[" is given to turn out to be a timestamp
+    # before it's treated as ordinary text.
+    PREFIX_LOOKAHEAD = 80
+
     def __init__(self, on_text=None, on_sentence=None):
         self._on_text = on_text
         self._on_sentence = on_sentence
         self.raw = ""
         self._shown = 0
         self._spoken = 0
+        self._prefix_len = None
+
+    def _presentable(self, final=False):
+        """Visible text, minus a timestamp the model copied off its input.
+
+        Stripping this at the end of the turn isn't enough. The screen
+        gets the corrected version, but the speaker was handed the first
+        sentence the moment it finished - timestamp and all - so you'd
+        watch it flash and vanish while still hearing it read aloud.
+
+        Nothing is emitted until the opening bracket has resolved one
+        way or the other, so the prefix stays negotiable right up until
+        the first character goes out. After that the offset is frozen,
+        because feed() tracks positions against it.
+        """
+        text = _visible(self.raw)
+
+        if self._prefix_len is not None and (self._shown or self._spoken):
+            return text[self._prefix_len:]
+
+        match = _LEADING_STAMP.match(text)
+        prefix = match.end() if match else 0
+        rest = text[prefix:]
+        pending = rest.lstrip()
+
+        # Mid-bracket. Hold rather than speak half a timestamp - but
+        # never at the end of the turn, where holding would silently
+        # swallow the whole reply.
+        if (not final and pending.startswith("[") and "]" not in pending
+                and len(text) < self.PREFIX_LOOKAHEAD):
+            return ""
+
+        self._prefix_len = prefix + (len(rest) - len(pending))
+
+        return text[self._prefix_len:]
 
     def feed(self, piece):
         if not piece:
             return
 
         self.raw += piece
-        text = _visible(self.raw)
+        text = self._presentable()
 
         if self._on_text and len(text) > self._shown:
             self._on_text(text[self._shown:])
@@ -320,7 +373,7 @@ class _Narrator:
 
     def finish(self):
         """Flush whatever didn't end in punctuation."""
-        text = _visible(self.raw)
+        text = self._presentable(final=True)
 
         if self._on_text and len(text) > self._shown:
             self._on_text(text[self._shown:])

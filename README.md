@@ -205,12 +205,39 @@ In `config.json`:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `KOKORO_URL` | `http://127.0.0.1:8899` | Server address |
-| `KOKORO_VOICE` | `config.json` → `voice` | Voice (`af_bella`, `am_adam`, ...) |
-| `KOKORO_SPEED` | `1.0` | 0.5 – 2.0 |
-| `KOKORO_VOLUME` | `1.0` | Playback gain |
+| `TTS_URL` | `http://127.0.0.1:8899` | Server address |
+| `TTS_VOICE` | `config.json` → `voice` | Voice (`af_bella`, `am_adam`, ...) |
+| `TTS_SPEED` | `1.0` | 0.5 – 2.0 |
+| `TTS_VOLUME` | `1.0` | Playback gain |
 
-Environment variables win over `config.json`.
+Environment variables win over `config.json`. The `KOKORO_*` names still
+work too, since that's what kokoro-reader itself uses.
+
+## Using a different speech server
+
+Nothing in the assistant is tied to Kokoro. The client speaks a
+three-endpoint contract and knows nothing else about what's behind it:
+
+```
+POST /tts   {"text": ..., "voice": ..., "speed": ...}  ->  WAV bytes
+GET  /health                                           ->  {"ok": true}
+GET  /voices                                           ->  the voice list
+```
+
+Two things worth knowing if you write your own:
+
+Text arrives **pre-chunked** — split on sentence boundaries, under 1000
+characters — and the next chunk is requested while the current one is
+still playing. So the server never sees a wall of text and doesn't need
+to stream; it just needs to return a sentence's worth of audio promptly.
+
+Audio can come back in **any common WAV format**: 8/16/32-bit integer,
+float32, float64, mono or stereo, at any sample rate. The client reads
+the header and scales accordingly. That matters because most PyTorch
+speech models emit float32, which Python's `wave` module refuses to
+open at all.
+
+Point `tts.url` at the new port and nothing else changes.
 
 ---
 

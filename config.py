@@ -79,17 +79,32 @@ GENERATION = setting("generation", {})
 #
 # Optional "tts" block in agent.json:
 #   "tts": { "url": "http://127.0.0.1:8899", "speed": 1.0, "volume": 1.0 }
-# Environment variables win over agent.json, so KOKORO_VOICE / KOKORO_URL
-# match the names the server itself uses.
+# Named for the job, not the server. kokoro-reader is what this speaks
+# to today, but the client only needs POST /tts, GET /health and GET
+# /voices - anything answering that contract works, so the constants
+# shouldn't be called KOKORO_*.
+#
+# The KOKORO_* environment variables still work, because kokoro-reader
+# uses those names and it would be rude to break someone's shell.
 _tts_cfg = setting("tts", {})
 
-KOKORO_URL = os.environ.get("KOKORO_URL", _tts_cfg.get("url", "http://127.0.0.1:8899")).rstrip("/")
-KOKORO_SPEED = float(os.environ.get("KOKORO_SPEED", _tts_cfg.get("speed", 1.0)))
-KOKORO_VOLUME = float(os.environ.get("KOKORO_VOLUME", _tts_cfg.get("volume", 1.0)))
-VOICE = os.environ.get("KOKORO_VOICE", setting("voice", "af_bella"))
 
-# Shown on the UI's VServer line.
-KOKORO_ADDRESS = urlparse(KOKORO_URL).netloc or KOKORO_URL
+def _tts_env(name, fallback):
+    return os.environ.get(f"TTS_{name}") or os.environ.get(f"KOKORO_{name}") \
+        or fallback
+
+
+TTS_URL = str(_tts_env("URL", _tts_cfg.get("url", "http://127.0.0.1:8899"))).rstrip("/")
+TTS_SPEED = float(_tts_env("SPEED", _tts_cfg.get("speed", 1.0)))
+TTS_VOLUME = float(_tts_env("VOLUME", _tts_cfg.get("volume", 1.0)))
+VOICE = _tts_env("VOICE", setting("voice", "af_bella"))
+
+# Shown on the UI's TTS line.
+TTS_ADDRESS = urlparse(TTS_URL).netloc or TTS_URL
+
+# Old names, kept so nothing outside this file has to change at once.
+KOKORO_URL, KOKORO_SPEED = TTS_URL, TTS_SPEED
+KOKORO_VOLUME, KOKORO_ADDRESS = TTS_VOLUME, TTS_ADDRESS
 
 # -------------------------
 # Control socket (Hyprland / Wayland push-to-talk)
@@ -347,9 +362,9 @@ SETTINGS = {
     "stt.model":                  ("STT_MODEL",                    False),
     "stt.language":               ("STT_LANGUAGE",                 False),
 
-    "tts.speed":                  ("KOKORO_SPEED",                 True),
-    "tts.volume":                 ("KOKORO_VOLUME",                True),
-    "tts.url":                    ("KOKORO_URL",                   False),
+    "tts.speed":                  ("TTS_SPEED",                    True),
+    "tts.volume":                 ("TTS_VOLUME",                   True),
+    "tts.url":                    ("TTS_URL",                      False),
 
     "vision.enabled":             ("VISION_ENABLED",               True),
     "vision.scale":               ("VISION_SCALE",                 True),

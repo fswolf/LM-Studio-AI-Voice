@@ -2,7 +2,6 @@ import io
 import queue
 import re
 import threading
-import wave
 
 import requests
 import sounddevice as sd
@@ -11,7 +10,7 @@ import state
 import ui
 
 from concurrent.futures import ThreadPoolExecutor
-from scipy.io.wavfile import write
+from scipy.io.wavfile import read as read_wav, write
 from faster_whisper import WhisperModel
 from collections import deque
 
@@ -20,8 +19,8 @@ import config
 from config import (
     SAMPLE_RATE,
     VOICE,
-    KOKORO_URL,
-    KOKORO_ADDRESS,
+    TTS_URL,
+    TTS_ADDRESS,
     STT_MODEL,
     STT_LANGUAGE,
     STT_MODE,
@@ -37,23 +36,23 @@ whisper = None
 
 # Set by load_models(); main.py surfaces it in the UI so a dead TTS
 # server is obvious at startup instead of on the first reply.
-kokoro_ok = False
-kokoro_error = ""
+tts_ok = False
+tts_error = ""
 
 
 def server_label():
     """The VServer line: address, plus whether it answered."""
-    return KOKORO_ADDRESS if kokoro_ok else f"{KOKORO_ADDRESS} [offline]"
+    return TTS_ADDRESS if tts_ok else f"{TTS_ADDRESS} [offline]"
 
 
 def _set_reachable(ok, error=""):
     """Track reachability so the header reflects reality mid-session -
     if the server dies (or comes back) you see it on the next reply."""
-    global kokoro_ok, kokoro_error
+    global tts_ok, tts_error
 
-    changed = ok != kokoro_ok
-    kokoro_ok = ok
-    kokoro_error = error
+    changed = ok != tts_ok
+    tts_ok = ok
+    tts_error = error
 
     if changed:
         try:
@@ -77,13 +76,13 @@ def load_models():
     _load_vad()
 
     try:
-        response = requests.get(f"{KOKORO_URL}/health", timeout=5)
+        response = requests.get(f"{TTS_URL}/health", timeout=5)
         response.raise_for_status()
         _set_reachable(bool(response.json().get("ok")))
     except Exception as e:
         _set_reachable(False, str(e))
 
-    return kokoro_ok
+    return tts_ok
 
 
 # ---------------------------------------------------------------------------
@@ -467,7 +466,17 @@ def transcribe(filename):
 
 
 # ---------------------------------------------------------------------------
-# Text-to-speech via the kokoro-reader HTTP server
+# Text-to-speech over HTTP
+#
+# The client speaks a three-endpoint contract and nothing more:
+#
+#   POST /tts   {"text", "voice", "speed"}  -> WAV bytes
+#   GET  /health                            -> {"ok": true}
+#   GET  /voices                            -> the available voices
+#
+# kokoro-reader is what it talks to by default, but any server
+# answering that works - point tts.url somewhere else and nothing here
+# needs to know.
 # ---------------------------------------------------------------------------
 def _split_chunks(text):
     """Break text into <= MAX_TTS_CHARS pieces on sentence boundaries."""
@@ -497,31 +506,65 @@ def _split_chunks(text):
     return [p for p in pieces if p]
 
 
+def _decode(payload):
+    """WAV bytes -> (float32 samples in [-1, 1], sample rate).
+
+    Deliberately not assuming 16-bit PCM. Python's `wave` module can't
+    even open a float32 WAV - it raises "unknown format: 3" - and most
+    PyTorch speech models emit float32 natively, so hardcoding <i2 meant
+    the client only worked with servers that converted on the way out.
+    Reading the dtype and scaling by it costs three lines and means any
+    server answering the contract works, whatever it hands back.
+    """
+    rate, data = read_wav(io.BytesIO(payload))
+
+    # Read the type *before* downmixing: averaging channels promotes
+    # ints to float, and then the scaling below would treat a 16-bit
+    # sample of 16383 as a float amplitude of 16383 and clip it to a
+    # square wave.
+    dtype = data.dtype
+    kind = dtype.kind
+
+    # Mono. Two speakers talking at once is not what anybody wanted.
+    if data.ndim > 1:
+        data = data.mean(axis=1)
+
+    if kind == "f":
+        samples = data.astype(np.float32)
+    elif kind == "u":
+        # 8-bit WAV is unsigned, centred on 128.
+        samples = (data.astype(np.float32) - 128.0) / 128.0
+    elif kind == "i":
+        # Scale by the width of whatever integer type it came in as.
+        samples = data.astype(np.float32) / float(
+            1 << (8 * dtype.itemsize - 1)
+        )
+    else:
+        raise RuntimeError(f"unsupported audio format from the TTS server: {dtype}")
+
+    return np.clip(samples, -1.0, 1.0), rate
+
+
 def _synthesize(text):
     """POST one chunk to /tts and decode the WAV it returns."""
     try:
         response = requests.post(
-            f"{KOKORO_URL}/tts",
-            json={"text": text, "voice": VOICE, "speed": config.KOKORO_SPEED},
+            f"{TTS_URL}/tts",
+            json={"text": text, "voice": VOICE, "speed": config.TTS_SPEED},
             timeout=180,
         )
         response.raise_for_status()
     except requests.exceptions.RequestException as e:
         _set_reachable(False, str(e))
         raise RuntimeError(
-            f"Kokoro server unreachable at {KOKORO_URL} "
-            f"(start kokoro_server.py from kokoro-reader): {e}"
+            f"TTS server unreachable at {TTS_URL}: {e}"
         ) from e
 
     _set_reachable(True)
 
-    with wave.open(io.BytesIO(response.content), "rb") as wav:
-        rate = wav.getframerate()
-        frames = wav.readframes(wav.getnframes())
+    samples, rate = _decode(response.content)
 
-    samples = np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
-
-    return samples * config.KOKORO_VOLUME, rate
+    return samples * config.TTS_VOLUME, rate
 
 
 def _play(samples, rate):

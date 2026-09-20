@@ -8,7 +8,7 @@ import requests
 import threading
 
 import config
-from config import AGENT_NAME, VOICE, KOKORO_URL
+from config import AGENT_NAME, VOICE, TTS_URL
 from speech import load_models
 from input import start_keyboard
 import assistant
@@ -67,13 +67,13 @@ for msg in history.get_messages():
     speaker = "user" if msg["role"] == "user" else AGENT_NAME.lower()
     ui.conversation.append((speaker, msg["content"]))
 
-# TTS now lives in the kokoro-reader server, so say so up front rather
-# than letting the first reply die with a connection error.
-if not speech.kokoro_ok:
+# Speech is synthesized by a separate server, so say so up front
+# rather than letting the first reply die with a connection error.
+if not speech.tts_ok:
     ui.add_message(
         "system",
-        f"Kokoro server not answering at {KOKORO_URL} - start kokoro_server.py "
-        f"(kokoro-reader) or the assistant will stay silent. ({speech.kokoro_error})",
+        f"No TTS server answering at {TTS_URL} - start one (kokoro-reader's "
+        f"kokoro_server.py by default) or she'll stay silent. ({speech.tts_error})",
     )
 
 ui.set_mode(ptt.mode())
