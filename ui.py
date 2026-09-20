@@ -383,6 +383,14 @@ def _conversation_lines():
             label, name_style = "You", "class:user"
         elif speaker == "system":
             label, name_style = "sys", "class:system"
+        elif speaker.startswith("chat:"):
+            # A stream viewer, not the person sitting here. The column
+            # names the source rather than the person, because viewer
+            # names are arbitrary length and this one is five wide -
+            # truncating a stranger's name is worse than putting it at
+            # the front of what they said, where it reads naturally
+            # and can't collide.
+            label, name_style = speaker[5:][:5], "class:guest"
         else:
             label, name_style = state["agent_name"][:5], "class:agent"
 
@@ -572,6 +580,7 @@ _HELP_SECTIONS = [
         ("/set", "list or change any setting, saved"),
         ("/tools", "which tools the model can call"),
         ("/tooltest", "does this model actually call them?"),
+        ("/plugins", "add-ons, and /<name> on|off for each"),
         ("/repair", "record past reminders as the calls they were"),
         ("/keys", "hotkey + socket diagnostics"),
         ("/clear", "wipe conversation and saved history"),
@@ -672,6 +681,10 @@ def _build_style():
         "value": THEME["value"],
         "agent": THEME["agent"],
         "user": THEME["user"],
+        # Viewers get the link colour rather than the user colour: at a
+        # glance it should be obvious which lines came from the room
+        # and which came from you.
+        "guest": f"{THEME['link']} bold",
         "system": THEME["system"],
         "ok": THEME["ok"],
         "warn": f"{THEME['warn']} bold",

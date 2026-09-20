@@ -319,6 +319,74 @@ DESKTOP_ENABLED = bool(_desktop_cfg.get("enabled", True))
 # the one here worth knowing is a switch.
 DESKTOP_CLIPBOARD = bool(_desktop_cfg.get("clipboard", True))
 
+# -------------------------
+# Plugins
+# -------------------------
+# Everything under "plugins" in config.json, keyed by plugin name. The
+# core never learns what a plugin's own keys mean - it just hands the
+# block over - which is what keeps a plugin droppable.
+#
+# "chat" is the exception: shared policy for any plugin that feeds her
+# live chat from strangers. It lives here rather than in a plugin
+# because it is the part that must not be per-plugin. A plugin can ask
+# for a wider tool list; chatroom.TOOL_CEILING is what it gets.
+#
+# API keys are deliberately not in here. config.json is in the repo,
+# and a key pasted into it is a key on GitHub - plugins read their own
+# from the environment or from ~/.config/ai-voice/.
+_plugins_cfg = setting("plugins", {})
+
+_chat_cfg = _plugins_cfg.get("chat") or {}
+# Which tools a stranger's question may reach. Everything absent from
+# this acts on Ryan's machine or Ryan's data, and a viewer must not be
+# able to reach it by asking nicely: the tools are dropped from the
+# request, not refused at call time.
+CHAT_TOOLS = tuple(_chat_cfg.get(
+    "tools", ["get_datetime", "time_until", "web_search"]
+))
+# Seconds between answers, so she isn't talking over the stream.
+CHAT_COOLDOWN_SECONDS = float(_chat_cfg.get("cooldown_seconds", 8))
+# And per viewer, so one person can't monopolise her.
+CHAT_USER_COOLDOWN_SECONDS = float(_chat_cfg.get("user_cooldown_seconds", 30))
+# A very long chat message is a paste, and a paste aimed at her is
+# usually an attempt at something.
+CHAT_MAX_MESSAGE_CHARS = int(_chat_cfg.get("max_message_chars", 300))
+# How much of the room she can see. Memory only, never stored.
+CHAT_CONTEXT_LINES = int(_chat_cfg.get("context_lines", 12))
+
+
+def plugin_settings(name):
+    """One plugin's settings, over the shared chat defaults.
+
+    Merged rather than either/or so a chat plugin gets the limits for
+    free and overrides only what is genuinely its own - a channel name,
+    a list of bots to ignore.
+    """
+    merged = {
+        "tools": list(CHAT_TOOLS),
+        "cooldown_seconds": CHAT_COOLDOWN_SECONDS,
+        "user_cooldown_seconds": CHAT_USER_COOLDOWN_SECONDS,
+        "max_message_chars": CHAT_MAX_MESSAGE_CHARS,
+        "context_lines": CHAT_CONTEXT_LINES,
+    }
+
+    block = _plugins_cfg.get(name)
+
+    if isinstance(block, dict):
+        merged.update(block)
+
+    return merged
+
+
+def set_plugin_enabled(name, on):
+    """Remember that a plugin was switched on, for next launch."""
+    _store(f"plugins.{name}.enabled", bool(on))
+
+    block = _plugins_cfg.setdefault(name, {})
+
+    if isinstance(block, dict):
+        block["enabled"] = bool(on)
+
 _history_cfg = setting("history", {})
 MAX_RAW_MESSAGES = _history_cfg.get("max_raw_messages", 15)
 SUMMARIZE_CHUNK = _history_cfg.get("summarize_chunk", 8)
@@ -415,6 +483,19 @@ SETTINGS = {
 
     "desktop.enabled":            ("DESKTOP_ENABLED",              True),
     "desktop.clipboard":          ("DESKTOP_CLIPBOARD",            True),
+
+    # Shared by every chat plugin. A plugin's own keys - channels,
+    # account ids - are edited in config.json; these are the ones worth
+    # turning mid-stream.
+    #
+    # Marked live, though a ChatRoom copies them when it is built - so
+    # "live" here means the next /<plugin> off, /<plugin> on picks them
+    # up, rather than a whole restart. Saying "needs a restart" when
+    # toggling the plugin is enough sends people the long way round.
+    "plugins.chat.cooldown_seconds":      ("CHAT_COOLDOWN_SECONDS",      True),
+    "plugins.chat.user_cooldown_seconds": ("CHAT_USER_COOLDOWN_SECONDS", True),
+    "plugins.chat.context_lines":         ("CHAT_CONTEXT_LINES",         True),
+    "plugins.chat.max_message_chars":     ("CHAT_MAX_MESSAGE_CHARS",     True),
 
     "wake_word.enabled":          ("WAKE_WORD_ENABLED",            False),
     "wake_word.model":            ("WAKE_WORD_MODEL",              False),
@@ -534,12 +615,29 @@ def save_setting(path, raw):
     name, live = SETTINGS[path]
 
     # Write the file first: if saving fails, nothing should look applied.
+    _store(path, value)
+
+    if name:
+        globals()[name] = value
+
+    return value, live
+
+
+def _store(path, value):
+    """Write one dotted key into config.json, creating the nesting.
+
+    Split out of save_setting because plugin switches aren't in
+    SETTINGS and never will be - the core doesn't know what plugins
+    exist until it has looked in the folder, and a whitelist it can't
+    populate isn't a whitelist.
+    """
     stored = _load_json(CONFIG_FILE)
     node = stored
     parts = path.split(".")
 
     for part in parts[:-1]:
-        node = node.setdefault(part, {})
+        existing = node.get(part)
+        node = node.setdefault(part, {}) if isinstance(existing, (dict, type(None))) else {}
 
     node[parts[-1]] = value
 
@@ -549,8 +647,3 @@ def save_setting(path, raw):
 
     settings.clear()
     settings.update(stored)
-
-    if name:
-        globals()[name] = value
-
-    return value, live

@@ -60,16 +60,25 @@ def tool(name, description, properties, required=(), available=None, why=None):
     return decorator
 
 
-def specs():
+def specs(only=None):
     """The tool list sent to the model.
 
     A tool that can't work is left out rather than offered and failed.
     Telling a model it can see, when grim isn't installed, gets you an
     assistant that confidently describes a screen it never looked at.
+
+    `only` narrows it to a named set. That exists for turns that came
+    from somewhere other than the person sitting here - stream chat,
+    most of all. Everything in this file acts on Ryan's machine or
+    Ryan's data, so a turn typed by a stranger must not reach most of
+    it, and "the model knows not to" is not a control. Leaving the
+    tool out of the request is.
     """
+    allowed = set(only) if only is not None else None
+
     return [
-        entry["spec"] for entry in _REGISTRY.values()
-        if entry["available"]()
+        entry["spec"] for name, entry in _REGISTRY.items()
+        if entry["available"]() and (allowed is None or name in allowed)
     ]
 
 

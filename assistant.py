@@ -46,6 +46,60 @@ def respond(text, model):
         return _respond(text, model)
 
 
+def busy():
+    """Is a turn in flight? Stream chat waits rather than barging in."""
+    return _turn.locked()
+
+
+def respond_to_chat(prompt, model, source, who, said,
+                    context=None, tools_allowed=None):
+    """A turn that came from stream chat rather than from Ryan.
+
+    Same speaking path - answering out loud is the whole point on a
+    stream - but it waits for the lock instead of cutting the current
+    reply short. Ryan interrupting her is him changing his mind; a
+    viewer interrupting her is a stranger talking over him.
+
+    The prompt, the context and the tool list are built by pomf.py, and
+    nothing here is stored: remember=False keeps a stranger's words out
+    of history and out of the transcript.
+    """
+    with _turn:
+        state.stop_speaking = False
+
+        player = speech.Player()
+
+        # What they said, not just that somebody said something. The
+        # first version showed only the name, which made the one thing
+        # you actually want to read - the question she is about to
+        # answer on stream - the one thing that wasn't on screen.
+        ui.add_message(f"chat:{source}", f"{who}: {said}")
+        ui.set_status("Chat...")
+        ui.begin_message(AGENT_NAME.lower())
+
+        def on_sentence(sentence):
+            if not state.stop_speaking:
+                player.say(sentence)
+
+        try:
+            answer = ask(
+                prompt, model,
+                on_text=ui.extend_message, on_sentence=on_sentence,
+                context=context, tools_allowed=tools_allowed, remember=False,
+            )
+
+            ui.replace_message(answer)
+            ui.end_message()
+            player.wait()
+
+            return answer
+        except Exception:
+            ui.end_message()
+            raise
+        finally:
+            ui.set_status("Idle")
+
+
 def _respond(text, model):
     # Only now, holding the lock: resetting this any earlier would
     # clear the stop we just set on the turn we're waiting for.

@@ -16,6 +16,7 @@ import control
 import history
 import lmstudio
 import logbook
+import plugins
 import ptt
 import reminders
 import speech
@@ -43,6 +44,11 @@ if transcript.trim():
 
 history.load()
 reminders.load()
+
+# Imported now, started later - a plugin needs the model name, and
+# loading early means a broken one is reported at startup rather than
+# the first time someone types its name.
+plugins.load()
 
 MODEL = lmstudio.probe()
 
@@ -137,6 +143,13 @@ socket_path = control.start(
 
 threading.Thread(target=start_keyboard, args=(MODEL,), daemon=True).start()
 threading.Thread(target=reminders.run_scanner, args=(MODEL,), daemon=True).start()
+
+# Optional add-ons from plugins/. Anything switched on comes back up
+# here, and anything that failed says so - "why isn't she answering
+# chat" should be answerable from the first screen rather than by
+# remembering whether you turned it on.
+for _line in plugins.start_enabled(MODEL):
+    ui.add_message("system", _line)
 
 
 # -------------------------
@@ -461,6 +474,39 @@ def handle_input(text):
 
         threading.Thread(target=check, daemon=True).start()
         return
+
+    if text.strip() in ("/plugins", "/plugin"):
+        ui.add_message("system", plugins.overview())
+        return
+
+    # Any loaded plugin answers to its own name, so the core doesn't
+    # have to know what's installed: /pomf on, /youtube off, /example.
+    if text.startswith("/"):
+        word, _, argument = text[1:].strip().partition(" ")
+        plugin = plugins.get(word)
+
+        if plugin is not None:
+            argument = argument.strip().lower()
+
+            if argument in ("on", "start"):
+                ok, message = plugin.start(MODEL)
+            elif argument in ("off", "stop"):
+                ok, message = plugin.stop()
+            else:
+                ui.add_message("system", plugin.status())
+                return
+
+            if ok:
+                try:
+                    config.set_plugin_enabled(
+                        plugin.name, argument in ("on", "start")
+                    )
+                    message += " (saved)"
+                except Exception:
+                    pass
+
+            ui.add_message("system", message)
+            return
 
     if text == "/repair":
         ui.add_message(
