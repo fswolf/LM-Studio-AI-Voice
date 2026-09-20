@@ -8,17 +8,20 @@ import requests
 import threading
 
 import config
-from config import AGENT_NAME, VOICE, TTS_URL
+from config import AGENT_NAME, VOICE, TTS_URL, LM_URL
 from speech import load_models
 from input import start_keyboard
 import assistant
 import control
 import history
+import lmstudio
+import logbook
 import ptt
 import reminders
 import speech
 import state
 import timeutil
+import transcript
 import ui
 import vision
 import wakeword
@@ -33,26 +36,64 @@ def shutdown(code=0):
 # -------------------------
 # Startup
 # -------------------------
+logbook.start()
+
+if transcript.trim():
+    logbook.info("transcript", "trimmed past the size cap")
+
 history.load()
 reminders.load()
 
-try:
-    models = requests.get("http://localhost:1234/v1/models", timeout=5).json()
-except requests.exceptions.ConnectionError:
+MODEL = lmstudio.probe()
+
+if not MODEL:
     print(
-        "\nCouldn't reach LM Studio at http://localhost:1234\n"
+        f"\nCouldn't reach LM Studio at {LM_URL}\n"
         "Make sure LM Studio is open, a model is loaded, and its local "
         "server is started (Developer tab) before running this.\n"
     )
     raise SystemExit(1)
 
-MODEL = models["data"][0]["id"]
 
-print("Loading models...")
-load_models()
+def _load_speech():
+    """Whisper, Silero and the wake word, off the startup path.
 
-if wakeword.enabled() and not wakeword.load():
-    print(f"Wake word unavailable: {wakeword.label()}")
+    These take several seconds between them, and they used to run
+    before the TUI was drawn - so every launch started with a bare
+    terminal saying "Loading models..." while nothing was usable.
+    Loading them behind the interface means you can read the
+    conversation, scroll, and type immediately; only voice has to wait,
+    and it says so if you try it early.
+    """
+    try:
+        load_models()
+        ui.set_status("Idle")
+        logbook.info("startup", "speech models ready | tts=%s", speech.server_label())
+
+        # This check belongs here, not on the startup path. load_models()
+        # is what probes the TTS server, and while that was synchronous
+        # the caller could read the result immediately. Moving it to a
+        # worker meant main.py was asking "is the server up?" a
+        # millisecond after starting the thread that finds out - so a
+        # perfectly healthy server reported itself offline, with an
+        # empty reason, because nothing had looked yet.
+        if not speech.tts_ok:
+            ui.add_message(
+                "system",
+                f"No TTS server answering at {TTS_URL} - start one "
+                "(kokoro-reader's kokoro_server.py by default) or she'll "
+                f"stay silent.{f' ({speech.tts_error})' if speech.tts_error else ''}",
+            )
+
+        if wakeword.enabled() and not wakeword.load():
+            ui.add_message("system", f"Wake word unavailable: {wakeword.label()}")
+    except Exception as e:
+        logbook.exception("startup", "speech models failed to load")
+        ui.add_message("system", f"Speech models failed to load: {e}")
+        ui.set_status("No voice")
+
+
+threading.Thread(target=_load_speech, daemon=True).start()
 
 ui.init(
     agent_name=AGENT_NAME,
@@ -67,17 +108,13 @@ for msg in history.get_messages():
     speaker = "user" if msg["role"] == "user" else AGENT_NAME.lower()
     ui.conversation.append((speaker, msg["content"]))
 
-# Speech is synthesized by a separate server, so say so up front
-# rather than letting the first reply die with a connection error.
-if not speech.tts_ok:
-    ui.add_message(
-        "system",
-        f"No TTS server answering at {TTS_URL} - start one (kokoro-reader's "
-        f"kokoro_server.py by default) or she'll stay silent. ({speech.tts_error})",
-    )
-
 ui.set_mode(ptt.mode())
-ui.set_status("Idle")
+ui.set_status("Loading speech...")
+ui.set_model(lmstudio.label())
+
+# Keep the header honest between turns, so an unloaded model shows up
+# straight away rather than on the next thing you say.
+lmstudio.watch()
 
 # -------------------------
 # Input paths:
@@ -118,6 +155,7 @@ def _process(text):
         # Without this, an LM Studio error (context overflow, bad param,
         # connection drop, etc.) would kill the worker silently instead
         # of just this one turn.
+        logbook.exception("turn", "typed turn failed")
         ui.add_message("system", f"Error: {e}")
         ui.set_status("Idle")
     finally:
@@ -380,6 +418,18 @@ def handle_input(text):
                     levels.get("mode", "?"),
                 ),
             )
+        return
+
+    if text.startswith("/log"):
+        count = text[4:].strip()
+        count = int(count) if count.isdigit() else 20
+
+        lines = logbook.tail(min(count, 200))
+
+        ui.add_message(
+            "system",
+            "{}\n{}".format(logbook.path(), "\n".join("  " + l for l in lines)),
+        )
         return
 
     if text == "/barge":

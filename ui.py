@@ -214,6 +214,13 @@ def end_message():
 drop_empty_message = end_message
 
 
+def set_model(label: str):
+    """Update the Model row - it now shows health, not just a name."""
+    with _lock:
+        state["model"] = label
+    _refresh()
+
+
 def init(agent_name, model, voice, memory_status="Loaded", voice_server="unknown"):
     with _lock:
         state["agent_name"] = agent_name
@@ -486,6 +493,7 @@ _HELP_SECTIONS = [
     ]),
     ("Session", [
         ("/look", "list windows / test a screenshot"),
+        ("/log", "tail the debug log"),
         ("/set", "list or change any setting, saved"),
         ("/tools", "which tools the model can call"),
         ("/keys", "hotkey + socket diagnostics"),

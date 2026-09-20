@@ -277,6 +277,19 @@ WAKE_WORD_FOLLOW_UP_SECONDS = float(_wake_cfg.get("follow_up_seconds", 12))
 WAKE_WORD_COOLDOWN = float(_wake_cfg.get("cooldown_seconds", 1.0))
 
 # -------------------------
+# Logging
+# -------------------------
+# Writes to ~/.cache/ai-voice/ai-voice.log. Off costs nothing, on costs
+# a few kilobytes a day and turns "it broke" into a line you can read.
+_log_cfg = setting("logging", {})
+LOG_ENABLED = bool(_log_cfg.get("enabled", True))
+# debug logs every VAD decision and tool argument, which is a lot; info
+# logs the things that went wrong and the choices behind them.
+LOG_LEVEL = str(_log_cfg.get("level", "info")).upper()
+LOG_MAX_KB = int(_log_cfg.get("max_kb", 1024))
+LOG_KEEP = int(_log_cfg.get("keep", 3))
+
+# -------------------------
 # Vision
 # -------------------------
 # Lets her look at your screen. Needs grim, and needs a vision model
@@ -296,6 +309,10 @@ SUMMARIZE_CHUNK = _history_cfg.get("summarize_chunk", 8)
 # The running summary is re-compressed once it passes this, rather than
 # being appended to forever.
 SUMMARY_MAX_CHARS = int(_history_cfg.get("summary_max_chars", 2500))
+# A full archive of every turn, which summarization never prunes. It is
+# what search_history reads; the prompt never sees it.
+TRANSCRIPT_ENABLED = bool(_history_cfg.get("transcript", True))
+TRANSCRIPT_MAX_MB = float(_history_cfg.get("transcript_max_mb", 20))
 
 _memory_cfg = setting("long_term_memory", {})
 LONG_TERM_MEMORY_ENABLED = _memory_cfg.get("enabled", True)
@@ -323,6 +340,12 @@ REMINDER_CHECK_INTERVAL_SECONDS = _reminders_cfg.get("check_interval_minutes", 1
 _web_search_cfg = setting("web_search", {})
 WEB_SEARCH_ENABLED = _web_search_cfg.get("enabled", True)
 WEB_SEARCH_MAX_RESULTS = _web_search_cfg.get("max_results", 5)
+# Opening a page she found, rather than summarizing the search blurb.
+PAGE_FETCH_ENABLED = bool(_web_search_cfg.get("fetch_pages", True))
+# How much of a page reaches the model. Roughly a thousand tokens per
+# 4000 characters, so this is the main cost control.
+PAGE_MAX_CHARS = int(_web_search_cfg.get("page_max_chars", 6000))
+PAGE_TIMEOUT = float(_web_search_cfg.get("page_timeout", 20))
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +389,9 @@ SETTINGS = {
     "tts.volume":                 ("TTS_VOLUME",                   True),
     "tts.url":                    ("TTS_URL",                      False),
 
+    "logging.enabled":            ("LOG_ENABLED",                  False),
+    "logging.level":              ("LOG_LEVEL",                    False),
+
     "vision.enabled":             ("VISION_ENABLED",               True),
     "vision.scale":               ("VISION_SCALE",                 True),
 
@@ -379,12 +405,15 @@ SETTINGS = {
 
     "web_search.enabled":         ("WEB_SEARCH_ENABLED",           True),
     "web_search.max_results":     ("WEB_SEARCH_MAX_RESULTS",       True),
+    "web_search.fetch_pages":     ("PAGE_FETCH_ENABLED",           True),
+    "web_search.page_max_chars":  ("PAGE_MAX_CHARS",               True),
 
     "reminders.enabled":          ("REMINDERS_ENABLED",            True),
 
     "history.max_raw_messages":   ("MAX_RAW_MESSAGES",             True),
     "history.summarize_chunk":    ("SUMMARIZE_CHUNK",              True),
     "history.summary_max_chars":  ("SUMMARY_MAX_CHARS",            True),
+    "history.transcript":         ("TRANSCRIPT_ENABLED",           True),
 
     "long_term_memory.enabled":   ("LONG_TERM_MEMORY_ENABLED",     True),
     "long_term_memory.max_facts": ("LONG_TERM_MEMORY_MAX_FACTS",   True),

@@ -9,6 +9,7 @@ from config import AGENT_NAME
 from llm import ask
 from speech import record_audio, transcribe
 
+import logbook
 import speech
 import state
 import ui
@@ -55,6 +56,12 @@ def assistant_task(model, mode=None):
     how the hands-free loop knows whether to hold the follow-up window
     open or go back to waiting for the wake word.
     """
+    if not speech.ready():
+        ui.add_message("system", "Still loading the speech models - one moment.")
+        ui.set_status("Loading...")
+
+        return False
+
     state.assistant_busy = True
     ui.set_status("Listening..." if mode != "manual" else "Recording...")
 
@@ -85,6 +92,7 @@ def assistant_task(model, mode=None):
             ui.set_status("Idle")
             return False
 
+        logbook.info("turn", "heard: %s", text[:200])
         ui.add_message("user", text)
         state.turn_source = "voice"
         respond(text, model)
@@ -92,6 +100,7 @@ def assistant_task(model, mode=None):
 
         return True
     except Exception as e:
+        logbook.exception("turn", "spoken turn failed")
         ui.set_status(f"Error: {e}")
 
         return False

@@ -351,6 +351,7 @@ Slash commands:
 | `/cancel N` | Cancel reminder N |
 | `/when ...` | Test how a time phrase is read, without scheduling it |
 | `/look` | List windows, or test a screenshot |
+| `/log` | Tail the debug log without leaving the app |
 | `/set` | List every setting, or change one — saved to `config.json` |
 | `/tools` | Which tools the model can call — and which it can't, and why |
 | `/keys` | Hotkey + socket diagnostics |
@@ -624,6 +625,8 @@ check the time, then schedule something.
 | `remember_fact` / `recall_facts` | Long-term memory, written deliberately |
 | `forget_fact` / `update_fact` | Correct it when it got something wrong |
 | `look_at_screen` | Take a screenshot and actually see it (optional) |
+| `read_page` | Open a link and read it, not just the search snippet |
+| `search_history` | Look through past conversations for something |
 | `web_search` | DuckDuckGo, for anything it can't know |
 
 A tool whose dependencies are missing isn't offered at all, rather than
@@ -859,6 +862,32 @@ the limit isn't the one that pays for it.
 
 ---
 
+# Logging
+
+Writes to `~/.cache/ai-voice/ai-voice.log`, rotating so it can't grow
+without bound. `/log` tails it without leaving the app.
+
+It records decisions, not just errors. "TTS failed" is a line anyone
+would write; the one that earns its keep looks like this:
+
+```
+[barge-in] fired | level=0.0412 baseline=0.0040 needed>0.0100
+           speech=0.96 threshold=0.65 held=0.35s
+```
+
+A baseline sitting exactly on the floor means calibration ran during
+silence — which is a bug that otherwise costs a screenshot and an hour
+to find.
+
+```json
+"logging": { "enabled": true, "level": "info", "max_kb": 1024, "keep": 3 }
+```
+
+`debug` adds every VAD decision and tool argument, which is a lot;
+`info` keeps what went wrong and the reasoning behind it.
+
+---
+
 # Web Search
 
 ```
@@ -870,6 +899,66 @@ Results come from DuckDuckGo via the `ddgs` package - no API key.
 
 Without tool calling it falls back to the old keyword trigger.
 ```
+
+## Reading the page, not the blurb
+
+Search returns a title, a couple of hundred characters and a URL —
+enough for "what's the weather", nowhere near enough for "what does
+this article say". `read_page` opens the link and strips it to readable
+text, so she can follow up on her own search instead of summarizing a
+snippet and sounding confident about it.
+
+Stdlib only — `HTMLParser`, not BeautifulSoup — so there's nothing new
+to install. Scripts, styles and markup plumbing are dropped, entities
+decoded, whitespace collapsed. Non-HTML content types, 404s and pages
+that need JavaScript are refused with a reason rather than returning
+something that looks like text but isn't.
+
+Page text reaches the model explicitly labelled as untrusted, the same
+as search results: summarize it, never follow instructions inside it.
+
+```json
+"web_search": { "fetch_pages": true, "page_max_chars": 6000 }
+```
+
+---
+
+# Remembering past conversations
+
+`history.py` keeps the last fifteen turns and folds the rest into a
+summary — then deletes them. That's right for the prompt, where context
+is scarce, and wrong for the conversation: ask what you decided last
+Tuesday and it's gone, replaced by two sentences written without that
+question in mind.
+
+So every turn is also appended to `history/transcript.jsonl`, which
+summarization never touches, and `search_history` reads it back.
+
+```
+> "What did we decide about the deploy window?"
+
+  Saturday 05 September 2026
+    14:32 You: I'm thinking about moving the deploy to Friday mornings
+    14:33 Luna: Friday mornings work if the migration finishes Thursday night.
+    14:35 You: yeah let's do that, Friday at nine
+```
+
+Matching is word overlap with light stemming — so "the cat reminder"
+finds "remind me to feed the cats" — plus the turns either side of each
+hit, because half a conversation rarely answers anything on its own.
+
+No embeddings and no index, deliberately. The corpus is one person's
+conversations and searching it takes milliseconds; a vector database
+here would be a way of making a simple thing impressive rather than
+good. The cost is that word overlap can't tell relevance from
+coincidence, so results are handed over as candidates the model is told
+to judge — and to say it doesn't recall rather than stretch one to fit.
+
+```json
+"history": { "transcript": true, "transcript_max_mb": 20 }
+```
+
+---
 
 ---
 
@@ -911,6 +1000,8 @@ ai-voice/
 ├── hyprland.py
 ├── kokoro-say.py
 ├── llm.py
+├── lmstudio.py
+├── logbook.py
 ├── longterm.py
 ├── main.py
 ├── ptt.py
@@ -920,10 +1011,12 @@ ai-voice/
 ├── state.py
 ├── timeutil.py
 ├── tools.py
+├── transcript.py
 ├── ui.py
 ├── vision.py
 ├── voice_loop_kokoro.py
 ├── wakeword.py
+├── webpage.py
 ├── websearch.py
 │
 ├── agent/
@@ -935,7 +1028,8 @@ ai-voice/
 │   └── ui-help.png
 │
 ├── history/
-│   └── conversation.json
+│   ├── conversation.json
+│   └── transcript.jsonl
 │
 ├── input/
 │   ├── __init__.py
@@ -965,6 +1059,9 @@ ai-voice/
 - Long-term memory the model writes, corrects and forgets
 - Reminders in plain language, with repeats, retry and DST-safe schedules
 - Web search the model reaches for on its own
+- Searchable archive of every conversation, which pruning never deletes
+- Reads web pages she finds, not just the search snippet
+- Rotating debug log that records decisions, not just errors
 - Every setting changeable from the terminal and saved, most without a restart
 - Themeable full-screen terminal interface
 - Cross-platform architecture

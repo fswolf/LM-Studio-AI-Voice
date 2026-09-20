@@ -6,6 +6,7 @@ import threading
 import requests
 import sounddevice as sd
 import numpy as np
+import logbook
 import state
 import ui
 
@@ -33,6 +34,11 @@ from config import (
 # config module each time they're used.
 
 whisper = None
+
+# Whisper takes a few seconds to load. It used to happen before the TUI
+# existed, so every launch began with a blank terminal; now it loads on
+# a worker and this says whether it has finished.
+models_ready = False
 
 # Set by load_models(); main.py surfaces it in the UI so a dead TTS
 # server is obvious at startup instead of on the first reply.
@@ -68,12 +74,18 @@ MAX_TTS_CHARS = 1000
 _pool = ThreadPoolExecutor(max_workers=1)
 
 
+def ready():
+    return models_ready
+
+
 def load_models():
-    global whisper
+    global whisper, models_ready
 
     whisper = WhisperModel(STT_MODEL, device="cpu", compute_type="int8")
 
     _load_vad()
+
+    models_ready = True
 
     try:
         response = requests.get(f"{TTS_URL}/health", timeout=5)
@@ -394,7 +406,13 @@ def _record_silero(mode):
     speech_seconds = len(recorded) / SAMPLE_RATE
     levels["speech_seconds"] = speech_seconds
 
+    logbook.debug("stt", "silero captured %.1fs | mode=%s peak=%.4f",
+                  speech_seconds, mode, levels["peak"])
+
     if speech_seconds < MIN_SPEECH_SECONDS:
+        logbook.debug("stt", "dropped: %.2fs is shorter than %.2fs",
+                      speech_seconds, MIN_SPEECH_SECONDS)
+
         return None
 
     filename = "/tmp/input.wav"
@@ -425,6 +443,7 @@ def record_audio(mode=None):
         try:
             return _record_silero(mode)
         except Exception as e:
+            logbook.exception("stt", "silero failed, falling back to levels")
             ui.add_message(
                 "system", f"Silero VAD failed ({e}) - falling back to levels."
             )
@@ -556,6 +575,8 @@ def _synthesize(text):
         response.raise_for_status()
     except requests.exceptions.RequestException as e:
         _set_reachable(False, str(e))
+        logbook.error("tts", "POST %s/tts failed: %s", TTS_URL, e)
+
         raise RuntimeError(
             f"TTS server unreachable at {TTS_URL}: {e}"
         ) from e
@@ -778,6 +799,12 @@ def _watch_for_barge_in(stop):
                         BARGE_IN_FLOOR, bleed[int(len(bleed) * 0.75)]
                     )
                     levels["barge_baseline"] = baseline
+                    logbook.debug(
+                        "barge-in", "calibrated | her level at the mic=%.4f "
+                        "(floor %.4f) | you need %.4f to cut in",
+                        baseline, BARGE_IN_FLOOR,
+                        baseline * config.STT_BARGE_IN_MARGIN,
+                    )
 
                 continue
 
@@ -803,6 +830,16 @@ def _watch_for_barge_in(stop):
             streak += 1
 
             if streak >= needed:
+                # The line that would have found this bug in a minute:
+                # a baseline at the floor means calibration ran during
+                # silence, so she is interrupting herself.
+                logbook.info(
+                    "barge-in",
+                    "fired | level=%.4f baseline=%.4f needed>%.4f "
+                    "speech=%.2f threshold=%.2f held=%.2fs",
+                    level, baseline, baseline * config.STT_BARGE_IN_MARGIN,
+                    probability, threshold, streak * block_seconds,
+                )
                 state.stop_speaking = True
                 state.barged_in = True
                 ui.set_status("Stopped - go ahead")

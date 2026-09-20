@@ -9,10 +9,13 @@ from config import LM_URL, TOOLS_ENABLED, MAX_TOOL_ROUNDS
 from config import AGENT_NAME, PERSONALITY, TONE, TRAITS, RULES, GENERATION
 from config import memory
 import history
+import lmstudio
+import logbook
 import longterm
 import reminders
 import timeutil
 import tools
+import transcript
 import vision
 import websearch
 
@@ -73,6 +76,9 @@ You have tools. Use them instead of guessing or promising:
   Never invent an answer you would have needed to look up.
 - A durable fact about the user worth recalling weeks later ->
   remember_fact. Not passing details of this conversation.
+- The user referring to something from a past conversation you can no
+  longer see -> search_history. Don't claim not to remember until you
+  have looked.
 - The user correcting something you remembered, or asking you to
   forget it -> update_fact or forget_fact. Don't just agree; change it.
 Call a tool only when it is needed; chat normally otherwise.
@@ -148,7 +154,13 @@ def _chat_completion(payload, narrator=None):
     if narrator is not None:
         return _streamed_message(payload, narrator)
 
-    response = requests.post(LM_URL, json=payload)
+    try:
+        response = requests.post(LM_URL, json=payload)
+    except requests.exceptions.RequestException as e:
+        lmstudio.mark_failed(e)
+        logbook.error("llm", "request failed: %s", e)
+
+        raise RuntimeError(f"LM Studio unreachable at {LM_URL}: {e}") from e
 
     try:
         data = response.json()
@@ -160,8 +172,10 @@ def _chat_completion(payload, narrator=None):
 
     if "choices" not in data:
         detail = data.get("error", data)
-        print(f"[llm] LM Studio response missing 'choices': {detail}")
+        logbook.error("llm", "response had no choices: %s", str(detail)[:500])
         raise RuntimeError(f"LM Studio error: {detail}")
+
+    lmstudio.mark_worked()
 
     return data["choices"][0]["message"]
 
@@ -399,13 +413,24 @@ def _stream_deltas(payload):
     ("ð\x9f\x92\x9c" instead of a heart). Splitting on newlines first
     is safe because no byte of a multi-byte UTF-8 sequence is ever 0x0A.
     """
-    with requests.post(
-        LM_URL, json=dict(payload, stream=True), stream=True, timeout=600
-    ) as response:
+    try:
+        response = requests.post(
+            LM_URL, json=dict(payload, stream=True), stream=True, timeout=600
+        )
+    except requests.exceptions.RequestException as e:
+        lmstudio.mark_failed(e)
+        logbook.error("llm", "stream failed to open: %s", e)
+
+        raise RuntimeError(f"LM Studio unreachable at {LM_URL}: {e}") from e
+
+    with response:
         if response.status_code != 200:
+            body = response.text[:500]
+            logbook.error("llm", "stream refused, HTTP %s: %s",
+                          response.status_code, body)
+
             raise RuntimeError(
-                f"LM Studio error (HTTP {response.status_code}): "
-                f"{response.text[:300]}"
+                f"LM Studio error (HTTP {response.status_code}): {body[:300]}"
             )
 
         for raw in response.iter_lines():
@@ -430,6 +455,8 @@ def _stream_deltas(payload):
             choices = chunk.get("choices") or []
 
             if choices:
+                lmstudio.mark_worked()
+
                 yield choices[0].get("delta") or {}
 
 
@@ -598,7 +625,10 @@ def _tool_rounds(payload, model, on_text=None, on_sentence=None):
         for call in calls:
             function = call.get("function", {})
             name = function.get("name", "")
-            result = tools.call(name, function.get("arguments", "{}"))
+            arguments = function.get("arguments", "{}")
+            logbook.info("tools", "%s(%s)", name, str(arguments)[:300])
+            result = tools.call(name, arguments)
+            logbook.info("tools", "%s -> %s", name, str(result)[:300])
 
             _log_tool_call(name, result)
 
@@ -726,8 +756,18 @@ def ask(text, model, on_text=None, on_sentence=None):
 
     messages.append(_timestamped("user", user_content, now))
 
+    # Use whatever is loaded now rather than what was loaded at startup.
+    # Unloading a model to free VRAM and loading another is a normal
+    # thing to do mid-session, and it used to mean every subsequent turn
+    # asked for a model that wasn't there.
+    swapped = lmstudio.take_change()
+
+    if swapped:
+        logbook.info("llm", "model changed to %s", swapped)
+        _log_tool_call("model", f"LM Studio is now running {swapped}")
+
     payload = {
-        "model": model,
+        "model": lmstudio.model or model,
         "messages": messages,
     }
 
@@ -769,7 +809,11 @@ def ask(text, model, on_text=None, on_sentence=None):
         # This used to be a bare apology, which told nobody anything.
         # An empty reply has a small number of distinct causes and the
         # app knows which one it hit, so say so.
-        _log_tool_call("empty reply", _why_empty())
+        reason = _why_empty()
+        logbook.warn("llm", "empty reply: %s | deltas=%s content=%s reasoning=%s rounds=%s",
+                     reason, _last_raw.get("deltas"), _last_raw.get("content"),
+                     _last_raw.get("reasoning"), _last_raw.get("tool_rounds"))
+        _log_tool_call("empty reply", reason)
         answer = "...sorry, I got tangled up there. Say that again?"
 
     # Stored content itself stays clean (no timestamp prefix baked in) -
@@ -779,6 +823,12 @@ def ask(text, model, on_text=None, on_sentence=None):
     # anything already saved to disk.
     history.add_message("user", text)
     history.add_message("assistant", answer)
+
+    # The same turns, to a file summarization never touches. history.py
+    # deletes these once they're folded into the summary; this is what
+    # makes "what did we decide last week" answerable.
+    transcript.add("user", text)
+    transcript.add("assistant", answer)
     history.maybe_summarize(model)
     history.save()
 

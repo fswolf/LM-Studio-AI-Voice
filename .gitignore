@@ -1,9 +1,10 @@
 __pycache__/
 *.pyc
 
-# Conversation log, long-term facts and scheduled reminders - all
-# personal, all regenerated at runtime.
+# Conversation log, the full transcript archive, and scheduled reminders
+# - all personal, all regenerated at runtime.
 history/conversation.json
+history/transcript.jsonl
 reminders/reminders.json
 
 # Screenshots and previews dropped here while working

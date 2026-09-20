@@ -6,6 +6,9 @@
 #   ./push.sh fixed the VAD    -> that, as the commit message
 #   ./push.sh -y tidy up       -> skip the confirmation
 #
+# Also offers to protect the files that ship with the repo but are tuned
+# to this machine, so a later rebase can't overwrite them.
+#
 set -euo pipefail
 
 cd "$(dirname "$(readlink -f "$0")")"
@@ -23,34 +26,87 @@ if ! git rev-parse --git-dir >/dev/null 2>&1; then
     exit 1
 fi
 
-# --- personal files that shouldn't be public -------------------------------
+# --- personal files ---------------------------------------------------------
 # .gitignore only covers untracked files. Anything committed before a rule
 # was added keeps getting updated, which is how a chat log ends up on
 # GitHub without anyone deciding to put it there.
 #
-# Files marked skip-worktree are excluded: they stay in the repo at their
-# committed contents while local edits are ignored, which is the right
-# answer for a config file you want published but not synced.
+# Two different problems, two different fixes.
+#
+# PRIVATE files should never be public at all - your conversations, your
+# reminders, your transcript. Those want dropping from the repo.
+#
+# PERSONAL files should ship with the repo so a fresh clone works, but
+# your local copy is tuned to your machine and shouldn't be pushed - or,
+# worse, overwritten by a rebase pulling the committed version back over
+# it. That is skip-worktree: the file stays in the repo at its committed
+# contents while git stops watching your copy. It has eaten local edits
+# to config.json and agent.json more than once.
+PRIVATE_PATTERN='history/conversation\.json|history/transcript\.jsonl|reminders/reminders\.json|Claude outputs/'
+PERSONAL_PATTERN='^config\.json$|^agent/agent\.json$|^agent/memory\.json$'
+
 SKIPPED=$(git ls-files -v | grep '^S ' | cut -c3- || true)
 
-LEAKY=$(git ls-files | grep -E \
-    'history/conversation\.json|reminders/reminders\.json|agent/memory\.json|Claude outputs/' \
-    || true)
+not_skipped() {
+    if [ -z "$SKIPPED" ]; then
+        cat
+    else
+        grep -vxF "$SKIPPED" || true
+    fi
+}
 
-if [ -n "$SKIPPED" ]; then
-    LEAKY=$(echo "$LEAKY" | grep -vxF "$SKIPPED" || true)
+PRIVATE=$(git ls-files | grep -E "$PRIVATE_PATTERN" | not_skipped || true)
+PERSONAL=$(git ls-files | grep -E "$PERSONAL_PATTERN" | not_skipped || true)
+
+if [ -n "$PRIVATE" ]; then
+    echo "These are tracked and would be published:"
+    echo "$PRIVATE" | sed 's/^/  /'
+    echo
+    echo "Drop them from the repo, keeping your local copies:"
+    echo "$PRIVATE" | sed 's|^|  git rm --cached "|; s|$|"|'
+    echo
 fi
 
-if [ -n "$LEAKY" ]; then
-    echo "These are tracked and will be committed as-is:"
-    echo "$LEAKY" | sed 's/^/  /'
+if [ -n "$PERSONAL" ]; then
+    COUNT=$(echo "$PERSONAL" | wc -l)
+
+    echo "$COUNT file(s) ship with the repo but are tuned to this machine:"
+    echo "$PERSONAL" | sed 's/^/  /'
     echo
-    echo "Keep it in the repo but stop syncing your local copy:"
-    echo "$LEAKY" | sed 's|^|  git update-index --skip-worktree "|; s|$|"|'
-    echo
-    echo "Or drop it from the repo entirely (keeps your local file):"
-    echo "$LEAKY" | sed 's|^|  git rm --cached "|; s|$|"|'
-    echo
+    echo "Marking them skip-worktree keeps the committed version public and"
+    echo "stops git touching yours - no more rebases overwriting your config."
+    echo "The trade-off: your local changes to them stop being pushed."
+    printf 'Mark them now? [y/N] '
+
+    if [ "$YES" = 1 ]; then
+        echo y
+        reply=y
+    else
+        read -r reply
+    fi
+
+    case "$reply" in
+        y|Y)
+            echo "$PERSONAL" | while IFS= read -r file; do
+                [ -n "$file" ] || continue
+
+                if git update-index --skip-worktree "$file" 2>/dev/null; then
+                    echo "  protected $file"
+                else
+                    echo "  couldn't protect $file" >&2
+                fi
+            done
+
+            # Anything just marked is no longer staged for this commit.
+            SKIPPED=$(git ls-files -v | grep '^S ' | cut -c3- || true)
+            echo
+            ;;
+        *)
+            echo "  left alone - commit them as-is, or mark them later with:"
+            echo "$PERSONAL" | sed 's|^|    git update-index --skip-worktree "|; s|$|"|'
+            echo
+            ;;
+    esac
 fi
 
 # --- is the remote ahead of us? --------------------------------------------
@@ -66,6 +122,43 @@ if git rev-parse '@{upstream}' >/dev/null 2>&1; then
         echo "The remote has $BEHIND commit(s) you don't have:"
         git log 'HEAD..@{upstream}' --oneline | sed 's/^/  /'
         echo
+
+        # A protected file changing upstream is the one case where the
+        # pull won't just work. skip-worktree stops git overwriting your
+        # copy, which is the whole point - but git's answer is to refuse
+        # the merge outright with "your local changes would be
+        # overwritten", which looks like a broken repo rather than a
+        # working safety catch. Say so here, with the way out.
+        COLLIDES=""
+
+        if [ -n "$SKIPPED" ]; then
+            COLLIDES=$(git diff --name-only 'HEAD..@{upstream}' 2>/dev/null \
+                | grep -xF "$SKIPPED" || true)
+        fi
+
+        if [ -n "$COLLIDES" ]; then
+            echo "Heads up - the remote also changed file(s) you've protected:"
+            echo "$COLLIDES" | sed 's/^/  /'
+            echo
+            echo "git will refuse the pull rather than overwrite them. To take"
+            echo "the incoming version, keeping a copy of yours:"
+            echo "$COLLIDES" | while IFS= read -r f; do
+                [ -n "$f" ] || continue
+                echo "  cp \"$f\" \"$f.mine\""
+                echo "  git update-index --no-skip-worktree \"$f\""
+                echo "  git checkout -- \"$f\""
+            done
+            echo "  git pull --rebase"
+            echo "$COLLIDES" | while IFS= read -r f; do
+                [ -n "$f" ] || continue
+                echo "  git update-index --skip-worktree \"$f\"   # re-protect"
+            done
+            echo
+            echo "Then merge anything you want back in from the .mine copies."
+            echo
+            exit 1
+        fi
+
         echo "Pull them first:"
         echo "  git pull --rebase"
         echo
