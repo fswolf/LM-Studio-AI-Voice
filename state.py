@@ -11,6 +11,11 @@ stop_listening = False
 # window you meant before you spoke.
 turn_source = "typed"
 
+# True only while the microphone is open. HOME means different things
+# either side of this: during recording it ends the recording, after it
+# it cancels the turn.
+recording = False
+
 # Stop *generating*, not just stop speaking. HOME sets both; a barge-in
 # sets only stop_speaking, because cutting the token stream on a false
 # trigger loses the whole reply - and barge-in, with no echo

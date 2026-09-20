@@ -263,6 +263,39 @@ you can't turn a dial that isn't there.
 A syntax error in either file is reported and skipped rather than being
 fatal — hand-editing them is the whole point of their being JSON.
 
+## Changing settings without leaving the terminal
+
+`/set` lists everything you can change, with its current value:
+
+```
+> /set
+  [stt]
+    stt.barge_in_margin              2.5
+    stt.vad_threshold                0.4
+    stt.model                        small   (needs a restart)
+  [tts]
+    tts.speed                        1.0
+```
+
+```
+> /set stt.barge_in_margin 3.5
+stt.barge_in_margin = 3.5 - saved
+```
+
+Changes are written to `config.json` immediately, so they survive a
+restart. Most take effect at once; the few that don't — a Whisper model
+size, a wake word file — say so rather than pretending.
+
+That split is real, not cosmetic. Settings are read once at import and
+copied into constants, which is why they can't normally change at
+runtime. The ones worth tuning by ear are read from the config module
+at the point of use instead, because tuning is a loop of *change it,
+say something, listen, change it again* and a restart each time around
+makes it useless.
+
+`/mode` saves too — a mode you picked and then lost on restart is just
+an annoyance.
+
 ---
 
 # Controls
@@ -270,6 +303,7 @@ fatal — hand-editing them is the whole point of their being JSON.
 | Key | Action |
 |------|--------|
 | Home | Push to talk — depends on the voice mode below |
+| Home *(while she's thinking or talking)* | Cancel the turn |
 | Enter | Send typed message |
 | Tab | Open / close the help panel |
 | PgUp / PgDn | Scroll the conversation |
@@ -290,6 +324,7 @@ Slash commands:
 | `/cancel N` | Cancel reminder N |
 | `/when ...` | Test how a time phrase is read, without scheduling it |
 | `/look` | List windows, or test a screenshot |
+| `/set` | List every setting, or change one — saved to `config.json` |
 | `/tools` | Which tools the model can call — and which it can't, and why |
 | `/keys` | Hotkey + socket diagnostics |
 | `/clear` | Wipe the conversation and saved history |
@@ -332,6 +367,20 @@ manual - records the moment you press and ignores silence entirely, so
 open   - hands free. Speech starts a turn, silence ends it, Luna
          answers, and the mic re-arms. HOME toggles the whole loop.
 ```
+
+HOME means two different things depending on when you press it, and the
+difference is decided by whether the microphone is open:
+
+| | idle | while recording | while thinking or talking |
+|---|---|---|---|
+| `auto` | start a turn | cancel it | cancel it |
+| `manual` | start recording | **finish, and answer** | cancel it |
+
+In manual mode the second press is a request for an answer, not a
+change of mind — so it ends the recording and leaves the turn alone. If
+you do want to abandon one, press again once she's thinking. A cancel
+during recording throws the audio away rather than transcribing it and
+then refusing to answer.
 
 Open mode only records *between* turns, never while Luna is speaking,
 and waits `settle_seconds` after she finishes before re-arming —
@@ -441,6 +490,11 @@ how loud you are? Lower it, or wear headphones.
 
 In open mode a barge-in skips the settle pause, because you're already
 mid-sentence and waiting would eat the start of it.
+
+A barge-in stops the *audio* only — the reply keeps generating and stays
+on screen. Without echo cancellation to lean on this will misfire
+occasionally, and when it does it should cost you the sound, never the
+answer. Pressing HOME is the one that stops both.
 
 ---
 
@@ -827,6 +881,7 @@ ai-voice/
 ├── config.py
 ├── control.py
 ├── history.py
+├── hyprland.py
 ├── kokoro-say.py
 ├── llm.py
 ├── longterm.py
@@ -840,6 +895,7 @@ ai-voice/
 ├── tools.py
 ├── ui.py
 ├── vision.py
+├── voice_loop_kokoro.py
 ├── wakeword.py
 ├── websearch.py
 │
@@ -882,6 +938,7 @@ ai-voice/
 - Long-term memory the model writes, corrects and forgets
 - Reminders in plain language, with repeats, retry and DST-safe schedules
 - Web search the model reaches for on its own
+- Every setting changeable from the terminal and saved, most without a restart
 - Themeable full-screen terminal interface
 - Cross-platform architecture
 

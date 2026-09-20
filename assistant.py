@@ -59,7 +59,18 @@ def assistant_task(model, mode=None):
     ui.set_status("Listening..." if mode != "manual" else "Recording...")
 
     try:
-        filename = record_audio(mode)
+        state.recording = True
+
+        try:
+            filename = record_audio(mode)
+        finally:
+            state.recording = False
+
+        # Cancelled rather than finished - throw the audio away instead
+        # of transcribing it and then refusing to answer.
+        if state.stop_generating:
+            ui.set_status("Idle")
+            return False
 
         # None means the detector never heard speech, or heard a blip too
         # short to be a sentence. Don't bother Whisper with it.

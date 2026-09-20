@@ -198,6 +198,66 @@ def handle_input(text):
             )
         return
 
+    if text.startswith("/set"):
+        parts = text.split(None, 2)
+
+        if len(parts) == 1:
+            grouped = {}
+
+            for path in sorted(config.SETTINGS):
+                section = path.split(".")[0] if "." in path else ""
+                grouped.setdefault(section, []).append(path)
+
+            lines = ["Change any of these with /set <name> <value>:"]
+
+            for section, paths in grouped.items():
+                lines.append(f"  [{section or 'general'}]")
+
+                for path in paths:
+                    _name, live = config.SETTINGS[path]
+                    lines.append("    {:32} {}{}".format(
+                        path, config.current(path),
+                        "" if live else "   (needs a restart)",
+                    ))
+
+            ui.add_message("system", "\n".join(lines))
+            return
+
+        if len(parts) == 2:
+            path = parts[1]
+
+            if path not in config.SETTINGS:
+                ui.add_message("system", f"No setting called {path!r}. /set lists them.")
+                return
+
+            ui.add_message("system", f"{path} = {config.current(path)}")
+            return
+
+        path, value = parts[1], parts[2]
+
+        try:
+            applied, live = config.save_setting(path, value)
+        except ValueError as e:
+            ui.add_message("system", f"Couldn't set that: {e}")
+            return
+        except OSError as e:
+            ui.add_message("system", f"Couldn't write config.json: {e}")
+            return
+
+        # stt.mode has a live switch of its own - flipping the constant
+        # isn't enough, the hands-free loop has to be told.
+        if path == "stt.mode":
+            ptt.set_mode(applied, save=False)
+
+        ui.add_message(
+            "system",
+            "{} = {}{}".format(
+                path, applied,
+                " - saved" if live else " - saved, takes effect on restart",
+            ),
+        )
+        return
+
     if text.startswith("/mode"):
         parts = text.split()
 

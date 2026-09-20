@@ -308,3 +308,184 @@ REMINDER_CHECK_INTERVAL_SECONDS = _reminders_cfg.get("check_interval_minutes", 1
 _web_search_cfg = setting("web_search", {})
 WEB_SEARCH_ENABLED = _web_search_cfg.get("enabled", True)
 WEB_SEARCH_MAX_RESULTS = _web_search_cfg.get("max_results", 5)
+
+
+# ---------------------------------------------------------------------------
+# Changing settings from the terminal
+#
+# Every value above is read once at import and copied into a constant,
+# which is fast and simple and means nothing can be changed at runtime.
+# That's fine for most of them - you don't retune a Whisper model size
+# mid-conversation - but it's wrong for the handful you actually tune by
+# ear, where the loop is "change it, say something, listen, change it
+# again" and a restart each time makes it useless.
+#
+# So: the ones worth tuning live are listed here by their dotted path in
+# config.json, and the modules that use them read config.<NAME> at call
+# time rather than importing the value. Everything else saves to the file
+# and waits for a restart, which /set says plainly.
+# ---------------------------------------------------------------------------
+SETTINGS = {
+    # path in config.json          constant        applies without a restart
+    "voice":                      ("VOICE",                        False),
+    "generation.max_tokens":      (None,                           False),
+    "generation.reasoning":       (None,                           False),
+
+    "stt.mode":                   ("STT_MODE",                     True),
+    "stt.vad_threshold":          ("STT_VAD_THRESHOLD",            True),
+    "stt.sensitivity":            ("STT_SENSITIVITY",              True),
+    "stt.silence_seconds":        ("STT_SILENCE_SECONDS",          True),
+    "stt.max_seconds":            ("STT_MAX_SECONDS",              True),
+    "stt.manual_max_seconds":     ("STT_MANUAL_MAX_SECONDS",       True),
+    "stt.no_speech_timeout":      ("STT_NO_SPEECH_TIMEOUT",        True),
+    "stt.settle_seconds":         ("STT_SETTLE_SECONDS",           True),
+    "stt.barge_in":               ("STT_BARGE_IN",                 True),
+    "stt.barge_in_seconds":       ("STT_BARGE_IN_SECONDS",         True),
+    "stt.barge_in_margin":        ("STT_BARGE_IN_MARGIN",          True),
+    "stt.barge_in_boost":         ("STT_BARGE_IN_BOOST",           True),
+    "stt.vad":                    ("STT_VAD",                      False),
+    "stt.model":                  ("STT_MODEL",                    False),
+    "stt.language":               ("STT_LANGUAGE",                 False),
+
+    "tts.speed":                  ("KOKORO_SPEED",                 True),
+    "tts.volume":                 ("KOKORO_VOLUME",                True),
+    "tts.url":                    ("KOKORO_URL",                   False),
+
+    "vision.enabled":             ("VISION_ENABLED",               True),
+    "vision.scale":               ("VISION_SCALE",                 True),
+
+    "wake_word.enabled":          ("WAKE_WORD_ENABLED",            False),
+    "wake_word.model":            ("WAKE_WORD_MODEL",              False),
+    "wake_word.threshold":        ("WAKE_WORD_THRESHOLD",          True),
+    "wake_word.follow_up_seconds": ("WAKE_WORD_FOLLOW_UP_SECONDS", True),
+
+    "tools.enabled":              ("TOOLS_ENABLED",                False),
+    "tools.max_rounds":           ("MAX_TOOL_ROUNDS",              True),
+
+    "web_search.enabled":         ("WEB_SEARCH_ENABLED",           True),
+    "web_search.max_results":     ("WEB_SEARCH_MAX_RESULTS",       True),
+
+    "reminders.enabled":          ("REMINDERS_ENABLED",            True),
+
+    "history.max_raw_messages":   ("MAX_RAW_MESSAGES",             True),
+    "history.summarize_chunk":    ("SUMMARIZE_CHUNK",              True),
+    "history.summary_max_chars":  ("SUMMARY_MAX_CHARS",            True),
+
+    "long_term_memory.enabled":   ("LONG_TERM_MEMORY_ENABLED",     True),
+    "long_term_memory.max_facts": ("LONG_TERM_MEMORY_MAX_FACTS",   True),
+    "long_term_memory.context_facts": ("LONG_TERM_MEMORY_CONTEXT_FACTS", True),
+}
+
+_TRUE = ("1", "true", "yes", "on", "y")
+_FALSE = ("0", "false", "no", "off", "n")
+
+
+def current(path):
+    """The value in effect right now, whatever file it came from."""
+    name = SETTINGS.get(path, (None, False))[0]
+
+    if name and name in globals():
+        return globals()[name]
+
+    node = settings
+
+    for part in path.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return None
+
+        node = node[part]
+
+    return node
+
+
+def _stored(path):
+    """The value as it sits in config.json, or None if it isn't there.
+
+    Preferred over the live constant when deciding a type: config.py
+    wraps most numbers in float(), so "60" in the file becomes 60.0 in
+    memory and writing that back turns every integer setting into a
+    decimal for no reason.
+    """
+    node = settings
+
+    for part in path.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return None
+
+        node = node[part]
+
+    return node
+
+
+def _coerce(path, raw):
+    """Turn terminal text into the type the setting already has."""
+    if not isinstance(raw, str):
+        return raw
+
+    existing = _stored(path)
+
+    if existing is None:
+        existing = current(path)
+
+    text = raw.strip()
+
+    if isinstance(existing, bool):
+        if text.lower() in _TRUE:
+            return True
+        if text.lower() in _FALSE:
+            return False
+
+        raise ValueError(f"{path} is on/off - say true or false, not {raw!r}")
+
+    if isinstance(existing, int) and not isinstance(existing, bool):
+        try:
+            number = float(text)
+        except ValueError:
+            raise ValueError(f"{path} is a number - {raw!r} isn't one") from None
+
+        # Keep it an int if it still is one, so config.json doesn't
+        # gain a decimal point every time you touch it.
+        return int(number) if number.is_integer() else number
+
+    if isinstance(existing, float):
+        try:
+            return float(text)
+        except ValueError:
+            raise ValueError(f"{path} is a number - {raw!r} isn't one") from None
+
+    return text
+
+
+def save_setting(path, raw):
+    """Write one dotted key into config.json, and apply it if it can be.
+
+    Returns (value, applied_now). Raises ValueError for an unknown key or
+    a value of the wrong shape, so /set can say what went wrong.
+    """
+    if path not in SETTINGS:
+        raise ValueError(f"unknown setting {path!r}")
+
+    value = _coerce(path, raw)
+    name, live = SETTINGS[path]
+
+    # Write the file first: if saving fails, nothing should look applied.
+    stored = _load_json(CONFIG_FILE)
+    node = stored
+    parts = path.split(".")
+
+    for part in parts[:-1]:
+        node = node.setdefault(part, {})
+
+    node[parts[-1]] = value
+
+    with open(CONFIG_FILE, "w") as file:
+        json.dump(stored, file, indent=4)
+        file.write("\n")
+
+    settings.clear()
+    settings.update(stored)
+
+    if name:
+        globals()[name] = value
+
+    return value, live

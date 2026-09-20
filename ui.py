@@ -486,6 +486,7 @@ _HELP_SECTIONS = [
     ]),
     ("Session", [
         ("/look", "list windows / test a screenshot"),
+        ("/set", "list or change any setting, saved"),
         ("/tools", "which tools the model can call"),
         ("/keys", "hotkey + socket diagnostics"),
         ("/clear", "wipe conversation and saved history"),

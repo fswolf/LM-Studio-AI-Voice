@@ -15,28 +15,23 @@ from scipy.io.wavfile import write
 from faster_whisper import WhisperModel
 from collections import deque
 
+import config
+
 from config import (
     SAMPLE_RATE,
     VOICE,
     KOKORO_URL,
-    KOKORO_SPEED,
-    KOKORO_VOLUME,
     KOKORO_ADDRESS,
     STT_MODEL,
     STT_LANGUAGE,
-    STT_SENSITIVITY,
-    STT_SILENCE_SECONDS,
-    STT_MAX_SECONDS,
-    STT_NO_SPEECH_TIMEOUT,
-    STT_MANUAL_MAX_SECONDS,
     STT_MODE,
     STT_VAD,
-    STT_VAD_THRESHOLD,
-    STT_BARGE_IN,
-    STT_BARGE_IN_SECONDS,
-    STT_BARGE_IN_MARGIN,
-    STT_BARGE_IN_BOOST,
 )
+
+# The rest are deliberately NOT imported by value. /set can change them
+# mid-session, and `from config import X` takes a copy that never hears
+# about it - so the values you actually tune by ear are read off the
+# config module each time they're used.
 
 whisper = None
 
@@ -200,8 +195,8 @@ def _record_energy(mode):
     and prone to cutting off - see _record_silero for the good path."""
     record_immediately = mode == "manual"
     stop_on_silence = mode != "manual"
-    give_up_after = STT_NO_SPEECH_TIMEOUT if mode == "auto" else None
-    max_seconds = STT_MANUAL_MAX_SECONDS if mode == "manual" else STT_MAX_SECONDS
+    give_up_after = config.STT_NO_SPEECH_TIMEOUT if mode == "auto" else None
+    max_seconds = config.STT_MANUAL_MAX_SECONDS if mode == "manual" else config.STT_MAX_SECONDS
 
     stream = sd.InputStream(
         samplerate=SAMPLE_RATE, channels=1, blocksize=BLOCK_SIZE, dtype="float32"
@@ -211,7 +206,7 @@ def _record_energy(mode):
     try:
         noise = min(_calibrate(stream), NOISE_CEILING)
 
-        sensitivity = max(0.1, STT_SENSITIVITY)
+        sensitivity = max(0.1, config.STT_SENSITIVITY)
         start_threshold = max(ABSOLUTE_FLOOR, noise * START_MULTIPLIER) / sensitivity
         continue_threshold = max(
             ABSOLUTE_FLOOR / 2, noise * CONTINUE_MULTIPLIER
@@ -275,7 +270,7 @@ def _record_energy(mode):
                     else:
                         silence += block_seconds
 
-                    if silence >= STT_SILENCE_SECONDS:
+                    if silence >= config.STT_SILENCE_SECONDS:
                         break
 
             if state.stop_listening:
@@ -322,20 +317,20 @@ def _record_silero(mode):
 
     iterator = VADIterator(
         _vad_model,
-        threshold=min(0.9, max(0.1, STT_VAD_THRESHOLD)),
+        threshold=min(0.9, max(0.1, config.STT_VAD_THRESHOLD)),
         sampling_rate=SAMPLE_RATE,
-        min_silence_duration_ms=int(STT_SILENCE_SECONDS * 1000),
+        min_silence_duration_ms=int(config.STT_SILENCE_SECONDS * 1000),
         speech_pad_ms=200,
     )
     iterator.reset_states()
 
-    give_up_after = STT_NO_SPEECH_TIMEOUT if mode == "auto" else None
+    give_up_after = config.STT_NO_SPEECH_TIMEOUT if mode == "auto" else None
     block_seconds = VAD_BLOCK_SIZE / SAMPLE_RATE
 
     levels.update({
         "noise_floor": 0.0,
-        "start": STT_VAD_THRESHOLD,
-        "continue": max(0.0, STT_VAD_THRESHOLD - 0.15),
+        "start": config.STT_VAD_THRESHOLD,
+        "continue": max(0.0, config.STT_VAD_THRESHOLD - 0.15),
         "peak": 0.0,
         "speech_seconds": 0.0,
         "triggered": False,
@@ -387,7 +382,7 @@ def _record_silero(mode):
             if state.stop_listening:
                 break
 
-            if elapsed >= STT_MAX_SECONDS:
+            if elapsed >= config.STT_MAX_SECONDS:
                 break
     finally:
         stream.stop()
@@ -507,7 +502,7 @@ def _synthesize(text):
     try:
         response = requests.post(
             f"{KOKORO_URL}/tts",
-            json={"text": text, "voice": VOICE, "speed": KOKORO_SPEED},
+            json={"text": text, "voice": VOICE, "speed": config.KOKORO_SPEED},
             timeout=180,
         )
         response.raise_for_status()
@@ -526,7 +521,7 @@ def _synthesize(text):
 
     samples = np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
 
-    return samples * KOKORO_VOLUME, rate
+    return samples * config.KOKORO_VOLUME, rate
 
 
 def _play(samples, rate):
@@ -682,9 +677,9 @@ def _watch_for_barge_in(stop):
     error - failing to offer barge-in is a missing nicety, but crashing
     the speaker thread would lose the reply.
     """
-    threshold = min(0.95, STT_VAD_THRESHOLD + STT_BARGE_IN_BOOST)
+    threshold = min(0.95, config.STT_VAD_THRESHOLD + config.STT_BARGE_IN_BOOST)
     block_seconds = VAD_BLOCK_SIZE / SAMPLE_RATE
-    needed = max(1, int(STT_BARGE_IN_SECONDS / block_seconds))
+    needed = max(1, int(config.STT_BARGE_IN_SECONDS / block_seconds))
 
     bleed = []
     calibrating = max(1, int(BARGE_IN_CALIBRATION_SECONDS / block_seconds))
@@ -745,7 +740,7 @@ def _watch_for_barge_in(stop):
 
             levels["barge_peak"] = max(levels["barge_peak"], level)
 
-            if level < baseline * STT_BARGE_IN_MARGIN:
+            if level < baseline * config.STT_BARGE_IN_MARGIN:
                 streak = 0
                 continue
 
@@ -780,7 +775,7 @@ def _watch_for_barge_in(stop):
 
 
 def barge_in_available():
-    return STT_BARGE_IN and _vad_model is not None
+    return config.STT_BARGE_IN and _vad_model is not None
 
 
 # ---------------------------------------------------------------------------

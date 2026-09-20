@@ -5,7 +5,7 @@
         "reasoning": "low"
     },
     "stt": {
-        "mode": "auto",
+        "mode": "manual",
         "vad": "auto",
         "vad_threshold": 0.4,
         "model": "small",
@@ -51,7 +51,7 @@
         "check_interval_minutes": 2
     },
     "history": {
-        "max_raw_messages": 15,
+        "max_raw_messages": 20,
         "summarize_chunk": 8,
         "summary_max_chars": 2500
     },

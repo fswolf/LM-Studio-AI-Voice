@@ -32,8 +32,13 @@ def mode():
     return _mode
 
 
-def set_mode(new_mode):
-    """Switch modes at runtime. Returns the mode actually in effect."""
+def set_mode(new_mode, save=True):
+    """Switch modes. Returns the mode actually in effect, or None.
+
+    Saves to config.json by default, because a mode you picked and then
+    lost on restart is just an annoyance - you only ever change it
+    because you want it changed.
+    """
     global _mode
 
     new_mode = str(new_mode).strip().lower()
@@ -47,6 +52,12 @@ def set_mode(new_mode):
 
     _mode = new_mode
     ui.set_mode(_mode)
+
+    if save:
+        try:
+            config.save_setting("stt.mode", new_mode)
+        except Exception as e:
+            ui.add_message("system", f"Mode changed, but not saved: {e}")
 
     return _mode
 
@@ -63,6 +74,7 @@ def _start_turn(model):
     state.stop_speaking = False
     state.stop_generating = False
     state.stop_listening = False
+    state.recording = False
 
     threading.Thread(
         target=assistant_task, args=(model, _mode), daemon=True
@@ -70,12 +82,24 @@ def _start_turn(model):
 
 
 def _interrupt():
-    """HOME mid-turn: shut up, stop listening, and stop generating."""
+    """Cancel the turn: shut up, stop listening, stop generating."""
     ui.set_status("Stopped")
     state.stop_speaking = True
     state.stop_generating = True
     state.stop_listening = True
     state.barged_in = False
+
+
+def _finish_recording():
+    """Manual mode's second press: end the recording, keep the turn.
+
+    Emphatically not _interrupt(). Pressing HOME to finish speaking is a
+    request for an answer, so it must not set stop_generating - doing
+    that aborted the reply the press had just asked for, and the turn
+    came back empty every time.
+    """
+    ui.set_status("Transcribing...")
+    state.stop_listening = True
 
 
 # ---------------------------------------------------------------------------
@@ -188,9 +212,15 @@ def toggle(model):
         return
 
     if state.assistant_busy:
-        # Mid-turn: in manual this is "stop recording and transcribe",
-        # otherwise it's "shut up / cancel".
-        _interrupt()
+        # The same key, two meanings, decided by whether the mic is open.
+        # In manual mode you press to start and press to finish, so a
+        # press while recording is "I'm done, go" - not "forget it".
+        # Once she's thinking or talking, it's "forget it".
+        if _mode == "manual" and state.recording:
+            _finish_recording()
+        else:
+            _interrupt()
+
         return
 
     _start_turn(model)
