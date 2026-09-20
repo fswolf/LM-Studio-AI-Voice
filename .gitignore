@@ -15,13 +15,15 @@ ai-voice-venv/
 .venv/
 venv/
 
-# Plugins are private by default. Anything you drop in plugins/ is
+# Plugins are private by default: anything you drop in plugins/ is
 # yours - channel names, account names, whatever you wire her up to -
-# so the repo ships the loader and the template and nothing else.
-# Whitelist a plugin here if you do want to publish it.
+# so nothing there is tracked unless it is listed below. Add a line to
+# publish one; the credentials it reads stay out either way, because
+# those live in ~/.config rather than beside the code.
 plugins/*
 !plugins/__init__.py
 !plugins/example.py
+!plugins/pomf.py
 
 # Credentials. The real ones live in ~/.config/ai-voice/, outside the
 # repo entirely - these are here in case a copy ever lands beside the

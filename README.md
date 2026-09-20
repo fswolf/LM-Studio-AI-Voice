@@ -897,20 +897,25 @@ names a plugin, which is what makes them droppable.
 
 ```
 /plugins        what's installed, and whether it's running
-/pomf on        start one (saved, so it comes back next launch)
-/pomf off       stop it
-/pomf           its own status block
+/<name> on      start one (saved, so it comes back next launch)
+/<name> off     stop it
+/<name>         its own status block
 ```
 
-Any loaded plugin answers to its own name automatically — `/youtube on`
+Every loaded plugin answers to its own name automatically — `/youtube on`
 works the day you write `plugins/youtube.py`, with no change to the core.
 
 ```
 > /plugins
 Plugins:
-  [on ] pomf         answers pomf.tv stream chat out loud
+  [on ] youtube      answers live chat out loud
   [off] example      a template - connects to nothing, answers nothing
+  [--] twitch        no API key - see plugins/twitch.py
+  [!!] discord       didn't load: ModuleNotFoundError: No module named 'aiohttp'
 ```
+
+`[--]` is loaded but can't run and says why; `[!!]` didn't import at
+all. Neither stops the app starting.
 
 **Plugins are private by default.** `.gitignore` excludes `plugins/*`
 apart from the loader and the template, because what you wire her up to
@@ -943,10 +948,37 @@ launch.
   [!!] youtube      didn't load: ModuleNotFoundError: No module named 'googleapiclient'
 ```
 
+### Keys don't go in config.json
+
+`config.json` is in the repo, so a key pasted into it is a key on
+GitHub. Read yours from the environment or from a file outside the repo
+entirely:
+
+```python
+CREDENTIALS_FILE = os.path.expanduser("~/.config/ai-voice/yourplugin.json")
+key = os.environ.get("YOURPLUGIN_KEY", "") or _stored().get("apikey", "")
+```
+
+Two things worth copying rather than rediscovering:
+
+* **Tell a broken credentials file apart from a missing one.** Swallowing
+  a JSON syntax error into an empty dict makes a misplaced comma look
+  exactly like "no API key", and sends you hunting for a key that was
+  there all along.
+* **Reject placeholders.** `"PUT_YOUR_KEY_HERE"` is a non-empty string,
+  so it passes every check, starts cleanly, and then fails at the far
+  end where the only symptom is silence.
+
+An account name or id belongs in the same file as the key, not in
+`config.json`. They're one credential — the key belongs to that account
+— and splitting them across two files buys you a mismatch that looks
+exactly like a dead connection. Which channel to watch is not a
+credential; that stays in `config.json` with the rest of the behaviour.
+
 ## Live chat plugins
 
-pomf, YouTube, Twitch and IRC differ entirely in how you connect and not
-at all in what the messages mean afterwards. Every one is: a name, a
+YouTube, Twitch, IRC and every stream site's own chat differ entirely
+in how you connect and not at all in what the messages mean afterwards. Every one is: a name, a
 line of text, someone you don't know, in public, in real time. So the
 transport is the plugin's job and the rest is `chatroom.py`:
 
@@ -960,10 +992,11 @@ _room.saw(who, message)
 
 That one call does the lot — decides whether it was meant for her,
 applies the rate limits, queues it, waits for a gap, and answers out
-loud. `plugins/pomf.py` is a real one at ~250 lines, nearly all of it
-websocket handling. `plugins/example.py` is a working template with the
-YouTube specifics written out (it's polled, not pushed — the response
-carries `pollingIntervalMillis` telling you when to come back).
+loud. A real transport lands at a couple of hundred lines, nearly all
+of it connection handling. `plugins/example.py` is a working template
+with the YouTube specifics written out (it's polled, not pushed — the
+response carries `pollingIntervalMillis` telling you when to come
+back).
 
 ### This is the one input that isn't you
 
@@ -1010,7 +1043,7 @@ request-forgery primitive pointed at your LAN.
 | `user_cooldown_seconds` | 30 | One viewer can't monopolise her |
 | `max_message_chars` | 300 | A long paste aimed at her is usually an attempt at something |
 | queue depth | 3 | Past a handful, answering a backlog is worse than dropping it |
-| `ignore` | `["PomfBot"]` | Other bots — and never her own messages, which on a live stream is an infinite loop |
+| `ignore` | `[]` | Bots and her own account — a reply containing her own name is an infinite loop on a live stream |
 
 ```json
 "plugins": {
@@ -1021,50 +1054,16 @@ request-forgery primitive pointed at your LAN.
         "max_message_chars": 300,
         "context_lines": 12
     },
-    "pomf": {
+    "yourchat": {
         "enabled": false,
-        "channel": "Beerus",
-        "bot_name": "",
-        "ignore": ["PomfBot"]
+        "channel": "YourName",
+        "ignore": ["SomeBot"]
     }
 }
 ```
 
 `chat` is shared policy for every chat plugin; each plugin's own block
 is merged over it, so a new one gets the limits for free.
-
-## pomf.tv
-
-```
-wss://pomf.tv/websocket/          Origin: https://pomf.tv
-→ {"roomId":"Beerus","userName":"LunaBot","apikey":"...","action":"connect"}
-← {"type":"message","from":{"name":"viewer"},"message":"...","roomid":"Beerus"}
-```
-
-```
-nice (pomf)  │ luna what do you think of the stream
-Luna         │ Mrrp~ it's going great, thanks for watching!
-```
-
-The API key is **not** in `config.json` — that file is in the repo, and
-a key pasted into it is a key on GitHub. It's read from `$POMF_APIKEY`,
-or from a file outside the repo entirely:
-
-```json
-// ~/.config/ai-voice/pomf.json
-{
-  "apikey": "your key from pomf",
-  "bot_name": "LunaBot"
-}
-```
-
-`bot_name` should ideally be a separate account — it's what she uses to
-recognise and ignore her own messages, and guest accounts are rate
-limited by pomf. Posting isn't implemented; she only speaks.
-
-```
-pip install websocket-client
-```
 
 ---
 
@@ -1465,8 +1464,8 @@ ai-voice/
 ├── main.py
 ├── plugins/
 │   ├── __init__.py   # the loader
-│   ├── example.py    # template - copy this
-│   └── pomf.py       # yours, gitignored
+│   └── example.py    # template - copy this
+│                     # (anything else here is yours, gitignored)
 ├── ptt.py
 ├── push.sh
 ├── reminders.py
