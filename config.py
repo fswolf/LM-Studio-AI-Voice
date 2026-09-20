@@ -114,15 +114,6 @@ CONTROL_SOCKET = os.environ.get(
     os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "ai-voice.sock"),
 )
 
-# Hotkey the assistant registers with Hyprland at startup and removes on
-# exit. Override in agent.json: "hotkey": "SUPER ALT, V"
-#
-# Set it to "" / "none" / "off" if you'd rather bind the key permanently
-# in your own config - runtime keywords don't survive a config reload,
-# so a config-file bind is the sturdier option.
-HOTKEY = os.environ.get("AI_VOICE_HOTKEY", setting("hotkey", "SUPER, HOME"))
-AUTO_BIND = HOTKEY.strip().lower() not in ("", "none", "off", "false")
-
 # -------------------------
 # TUI theme
 # -------------------------

@@ -567,20 +567,15 @@ any speech.
 
 ---
 
-# Global Hotkey on Hyprland (Optional)
+# Talking From Another Window (Optional)
 
-HOME works while the assistant's window is focused, on Linux, macOS and
-Windows, with no permissions and nothing to configure. That covers
-normal use.
+HOME works while the assistant's window is focused, everywhere, with no
+permissions and nothing to configure. That covers normal use and is all
+most setups need.
 
-If you want push-to-talk to fire while a *different* window is focused —
-mid-game, or with OBS in front — the compositor has to own the hotkey,
-because Wayland gives applications no global key grabs. That's a
-protocol decision, not a missing library, so it's the same in any
-language.
-
-A control socket at `$XDG_RUNTIME_DIR/ai-voice.sock` exists for exactly
-this. Bind a key to poke it:
+If you want to start a turn *without* focusing it — mid-game, or with
+the browser in front — there's a control socket at
+`$XDG_RUNTIME_DIR/ai-voice.sock`. Bind a key to poke it:
 
 ```conf
 # hyprland.conf
@@ -594,19 +589,19 @@ hl.bind("SUPER + HOME", hl.dsp.exec_cmd("python3 ~/ai-voice/ai-voice-ctl.py ptt"
 
 `ai-voice-ctl.py` is stdlib-only and needs no virtualenv, which matters
 because `exec` runs outside it. It takes `ptt`, `stop` or `quit`, so any
-script or panel button can drive the assistant too.
+script or panel button can drive the assistant.
 
 > Keep a modifier. A bare `HOME` bind is swallowed compositor-wide, so
 > `Home` stops working in your terminal, editor and browser — including
 > the assistant's own prompt.
 
-The same socket works on Sway, KDE or GNOME; only the bind syntax
-changes. On **X11 or a TTY** none of this is needed — `evdev` picks up
-HOME globally as long as you can read the input devices:
+This is also the better way to use vision: focus the window you care
+about, hit the bind, and talk. The assistant never takes focus, so the
+screenshot is of what you were actually looking at rather than of her
+own terminal. See [Vision](#vision).
 
-```bash
-sudo usermod -aG input "$USER"   # then log out and back in
-```
+The same socket works on Sway, KDE or GNOME; only the bind syntax
+changes.
 
 ---
 
@@ -1027,7 +1022,6 @@ ai-voice/
 ├── config.py
 ├── control.py
 ├── history.py
-├── hyprland.py
 ├── kokoro-say.py
 ├── llm.py
 ├── lmstudio.py
