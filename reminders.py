@@ -176,8 +176,18 @@ def describe(reminder):
 # ---------------------------------------------------------------------------
 # Extraction
 # ---------------------------------------------------------------------------
-def _looks_like_reminder(text):
+def looks_like_reminder(text):
+    """Does this sound like it wants scheduling?
+
+    Deliberately wide. A false positive costs one cheap model call that
+    answers NONE; a false negative means the reminder silently never
+    existed, which is the failure people actually notice.
+    """
     return bool(_TRIGGERS.search(text or ""))
+
+
+# Older private name, still used inside this module.
+_looks_like_reminder = looks_like_reminder
 
 
 _PROMPT = """You extract reminder requests. Do NOT do any arithmetic and do

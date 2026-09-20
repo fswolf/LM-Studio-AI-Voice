@@ -64,24 +64,27 @@ def build_tools_prompt():
         return ""
 
     return """
-You have tools. Use them instead of guessing or promising:
-- What day or time it is now -> get_datetime.
-- How far away a date is, or what date something falls on ->
-  time_until. Do not count days or convert units in your head.
-- The user asking to be reminded of something -> set_reminder. Pass
-  their timing words through unchanged ("tomorrow at 9", "in ten
-  minutes", "every monday"); the app works out the actual time.
-  Confirm what you scheduled afterwards.
-- Anything you cannot know (news, prices, live facts) -> web_search.
-  Never invent an answer you would have needed to look up.
-- A durable fact about the user worth recalling weeks later ->
-  remember_fact. Not passing details of this conversation.
-- The user referring to something from a past conversation you can no
-  longer see -> search_history. Don't claim not to remember until you
-  have looked.
-- The user correcting something you remembered, or asking you to
-  forget it -> update_fact or forget_fact. Don't just agree; change it.
-Call a tool only when it is needed; chat normally otherwise.
+You have tools. Call them - do not describe calling them. Saying "I'll
+set that for you" without calling set_reminder means nothing happens,
+and the user finds out later that it didn't.
+
+- The user wants to be reminded of anything -> set_reminder. Pass their
+  timing words through unchanged ("in 5 mins", "tomorrow at 9", "every
+  monday"); the app works out the actual time. Confirm afterwards.
+- Checking or cancelling what's scheduled -> list_reminders,
+  cancel_reminder.
+- What day or time it is now -> get_datetime. How far away something is
+  -> time_until. Never count days or convert units yourself.
+- Anything about what's on their screen -> look_at_screen.
+- Anything you cannot know - news, prices, live facts -> web_search,
+  then read_page if the snippets aren't enough. Never invent an answer
+  you would have needed to look up.
+- Something from a past conversation you can't see -> search_history.
+  Don't say you don't remember until you've looked.
+- A durable fact about them worth recalling weeks later ->
+  remember_fact; a correction to one -> update_fact or forget_fact.
+
+Chat normally when no tool is needed.
 """
 
 
@@ -219,7 +222,8 @@ def _timestamped(role, content, timestamp):
 
 # What the last completion actually contained, so an empty reply can be
 # explained instead of apologised for.
-_last_raw = {"deltas": 0, "content": 0, "reasoning": 0, "tool_rounds": 0}
+_last_raw = {"deltas": 0, "content": 0, "reasoning": 0, "tool_rounds": 0,
+             "called": set()}
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 
@@ -589,6 +593,7 @@ def _tool_rounds(payload, model, on_text=None, on_sentence=None):
     global _tools_supported
 
     streaming = bool(on_text or on_sentence)
+    _last_raw["called"] = set()
 
     # A round can produce prose *and* a tool call ("let me check that
     # for you" followed by get_datetime). That preamble is spoken and
@@ -626,6 +631,7 @@ def _tool_rounds(payload, model, on_text=None, on_sentence=None):
             function = call.get("function", {})
             name = function.get("name", "")
             arguments = function.get("arguments", "{}")
+            _last_raw["called"].add(name)
             logbook.info("tools", "%s(%s)", name, str(arguments)[:300])
             result = tools.call(name, arguments)
             logbook.info("tools", "%s -> %s", name, str(result)[:300])
@@ -832,11 +838,32 @@ def ask(text, model, on_text=None, on_sentence=None):
     history.maybe_summarize(model)
     history.save()
 
-    # With tools available the model calls remember_fact and the reminder
-    # tools itself, so the keyword extractors would only duplicate work -
-    # and double-schedule reminders.
+    called = _last_raw.get("called") or set()
+
     if not _tools_supported:
         longterm.extract_in_background(model, text, answer)
+        reminders.extract_in_background(model, text)
+    elif not called & {"set_reminder", "list_reminders", "cancel_reminder"}:
+        # She will sometimes say "Got it, setting that for you!" without
+        # ever calling set_reminder - a small model choosing to sound
+        # helpful over being helpful, and it gets likelier as the tool
+        # list grows. The failure is silent and total: a confident
+        # confirmation, and nothing scheduled.
+        #
+        # So when a turn looks like a reminder request and no reminder
+        # tool ran, the old keyword extractor gets a go at it. It
+        # self-guards (nothing that isn't a reminder reaches the model,
+        # and the model answers NONE when it isn't one), it does its
+        # date arithmetic in the same timeutil everything else uses, and
+        # it announces what it scheduled - so a caught one is visible
+        # rather than quietly patched over.
+        if reminders.looks_like_reminder(text):
+            logbook.warn(
+                "reminders",
+                "claimed but never called set_reminder - falling back: %s",
+                text[:120],
+            )
+
         reminders.extract_in_background(model, text)
 
     return answer
