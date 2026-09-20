@@ -1,0 +1,63 @@
+{
+    "voice": "af_bella",
+    "generation": {
+        "max_tokens": 4800,
+        "reasoning": "low"
+    },
+    "stt": {
+        "mode": "auto",
+        "vad": "auto",
+        "vad_threshold": 0.4,
+        "model": "small",
+        "language": "en",
+        "sensitivity": 1.0,
+        "silence_seconds": 1.2,
+        "max_seconds": 60,
+        "manual_max_seconds": 300,
+        "no_speech_timeout": 8,
+        "settle_seconds": 0.6,
+        "barge_in": true,
+        "barge_in_seconds": 0.35,
+        "barge_in_margin": 2.5,
+        "barge_in_boost": 0.25
+    },
+    "tts": {
+        "url": "http://127.0.0.1:8899",
+        "speed": 1.0,
+        "volume": 1.0
+    },
+    "vision": {
+        "enabled": true,
+        "scale": 0.5,
+        "max_kb": 4096
+    },
+    "wake_word": {
+        "enabled": false,
+        "model": "hey_jarvis",
+        "threshold": 0.5,
+        "follow_up_seconds": 12,
+        "cooldown_seconds": 1.0
+    },
+    "tools": {
+        "enabled": true,
+        "max_rounds": 4
+    },
+    "web_search": {
+        "enabled": true,
+        "max_results": 3
+    },
+    "reminders": {
+        "enabled": true,
+        "check_interval_minutes": 2
+    },
+    "history": {
+        "max_raw_messages": 15,
+        "summarize_chunk": 8,
+        "summary_max_chars": 2500
+    },
+    "long_term_memory": {
+        "enabled": true,
+        "max_facts": 30,
+        "context_facts": 25
+    }
+}

@@ -6,7 +6,7 @@ import state
 from datetime import datetime
 
 from config import LM_URL, TOOLS_ENABLED, MAX_TOOL_ROUNDS
-from config import agent
+from config import AGENT_NAME, PERSONALITY, TONE, TRAITS, RULES, GENERATION
 from config import memory
 import history
 import longterm
@@ -88,7 +88,7 @@ def build_system_prompt(query=""):
     # instruction to work out elapsed time from other ISO timestamps -
     # arithmetic a 9B model fails quietly and confidently.
     return f"""
-You are {agent['name']}.
+You are {AGENT_NAME}.
 
 Right now:
 {timeutil.describe_now()}
@@ -100,16 +100,16 @@ or the brackets in your own replies. If you need a date the prefixes
 do not give you, call get_datetime or time_until.
 
 Personality:
-{agent['personality']}
+{PERSONALITY}
 
 Tone:
-{agent['tone']}
+{TONE}
 
 Traits:
-{', '.join(agent['traits'])}
+{', '.join(TRAITS)}
 
 Rules:
-{', '.join(agent['rules'])}
+{', '.join(RULES)}
 {build_tools_prompt()}
 {build_memory_prompt(query)}
 {summary_block}
@@ -117,7 +117,7 @@ Rules:
 
 
 def build_generation_params():
-    gen = agent.get("generation", {})
+    gen = GENERATION
     params = {}
 
     max_tokens = gen.get("max_tokens")

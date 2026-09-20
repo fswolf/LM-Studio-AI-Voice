@@ -8,29 +8,67 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LM_URL = "http://localhost:1234/v1/chat/completions"
 SAMPLE_RATE = 16000
 
-with open(os.path.join(BASE_DIR, "agent", "agent.json"), "r") as file:
-    agent = json.load(file)
+# ---------------------------------------------------------------------------
+# Two files, two jobs.
+#
+#   agent/agent.json  - who she is. Name, personality, tone, traits, rules.
+#   config.json       - how the machine runs. Voice, models, thresholds,
+#                       timeouts, theme.
+#
+# They were one file, which meant tuning a VAD threshold and rewriting her
+# personality were the same edit, and you couldn't share either one without
+# handing over the other.
+#
+# config.json wins where both define a key, and agent.json is still read as
+# a fallback so an install that never split them keeps working untouched.
+# ---------------------------------------------------------------------------
+def _load_json(path, on_missing=None):
+    """Read a JSON file, or explain why not and carry on.
 
-# A stray comma in memory.json used to take the whole app down on
-# startup with a bare JSONDecodeError - and the most likely way to get
-# one is editing the file by hand, which is a thing you're meant to be
-# able to do. Say what's wrong, keep the broken file, carry on empty.
-_memory_path = os.path.join(BASE_DIR, "agent", "memory.json")
+    A stray comma used to take the whole app down on startup with a bare
+    JSONDecodeError - and hand-editing these files is the entire point of
+    them being JSON, so a typo shouldn't be fatal.
+    """
+    try:
+        with open(path, "r") as file:
+            return json.load(file)
+    except FileNotFoundError:
+        return {} if on_missing is None else on_missing()
+    except (json.JSONDecodeError, OSError) as error:
+        print(
+            f"\nCouldn't read {path}:\n  {error}\n"
+            "Carrying on with defaults. The file has been left alone - "
+            "fix the syntax and restart.\n"
+        )
+        return {}
 
-try:
-    with open(_memory_path, "r") as file:
-        memory = json.load(file)
-except FileNotFoundError:
-    memory = {}
-except (json.JSONDecodeError, OSError) as _memory_error:
-    print(
-        f"\nCouldn't read {_memory_path}:\n  {_memory_error}\n"
-        "Starting with an empty memory. The file has been left alone - "
-        "fix the syntax and restart to get your facts back.\n"
-    )
-    memory = {}
 
-AGENT_NAME = agent["name"]
+AGENT_FILE = os.path.join(BASE_DIR, "agent", "agent.json")
+CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+MEMORY_FILE = os.path.join(BASE_DIR, "agent", "memory.json")
+
+agent = _load_json(AGENT_FILE)
+settings = _load_json(CONFIG_FILE)
+memory = _load_json(MEMORY_FILE)
+
+
+def setting(key, default=None):
+    """A machine setting: config.json first, then agent.json."""
+    if key in settings:
+        return settings[key]
+
+    return agent.get(key, default)
+
+
+AGENT_NAME = agent.get("name") or settings.get("name") or "Luna"
+
+# Persona, kept separate from the machine settings so llm.py doesn't have
+# to know which file anything came from.
+PERSONALITY = agent.get("personality", "")
+TONE = agent.get("tone", "")
+TRAITS = agent.get("traits", [])
+RULES = agent.get("rules", [])
+GENERATION = setting("generation", {})
 
 # -------------------------
 # TTS (kokoro-reader server)
@@ -43,12 +81,12 @@ AGENT_NAME = agent["name"]
 #   "tts": { "url": "http://127.0.0.1:8899", "speed": 1.0, "volume": 1.0 }
 # Environment variables win over agent.json, so KOKORO_VOICE / KOKORO_URL
 # match the names the server itself uses.
-_tts_cfg = agent.get("tts", {})
+_tts_cfg = setting("tts", {})
 
 KOKORO_URL = os.environ.get("KOKORO_URL", _tts_cfg.get("url", "http://127.0.0.1:8899")).rstrip("/")
 KOKORO_SPEED = float(os.environ.get("KOKORO_SPEED", _tts_cfg.get("speed", 1.0)))
 KOKORO_VOLUME = float(os.environ.get("KOKORO_VOLUME", _tts_cfg.get("volume", 1.0)))
-VOICE = os.environ.get("KOKORO_VOICE", agent.get("voice", "af_bella"))
+VOICE = os.environ.get("KOKORO_VOICE", setting("voice", "af_bella"))
 
 # Shown on the UI's VServer line.
 KOKORO_ADDRESS = urlparse(KOKORO_URL).netloc or KOKORO_URL
@@ -67,7 +105,7 @@ CONTROL_SOCKET = os.environ.get(
 # Set it to "" / "none" / "off" if you'd rather bind the key permanently
 # in your own config - runtime keywords don't survive a config reload,
 # so a config-file bind is the sturdier option.
-HOTKEY = os.environ.get("AI_VOICE_HOTKEY", agent.get("hotkey", "SUPER, HOME"))
+HOTKEY = os.environ.get("AI_VOICE_HOTKEY", setting("hotkey", "SUPER, HOME"))
 AUTO_BIND = HOTKEY.strip().lower() not in ("", "none", "off", "false")
 
 # -------------------------
@@ -110,7 +148,7 @@ _THEME_DEFAULTS = {
 
 THEME = dict(_THEME_DEFAULTS)
 THEME.update(
-    {k: v for k, v in agent.get("theme", {}).items() if k in _THEME_DEFAULTS}
+    {k: v for k, v in setting("theme", {}).items() if k in _THEME_DEFAULTS}
 )
 
 # -------------------------
@@ -120,7 +158,7 @@ THEME.update(
 #   "stt": { "model": "small", "language": "en", "sensitivity": 1.0,
 #            "silence_seconds": 1.2, "max_seconds": 60,
 #            "no_speech_timeout": 8 }
-_stt_cfg = agent.get("stt", {})
+_stt_cfg = setting("stt", {})
 
 # How push-to-talk behaves:
 #   auto   - HOME starts listening, silence ends it (the default)
@@ -211,7 +249,7 @@ STT_BARGE_IN_BOOST = float(_stt_cfg.get("barge_in_boost", 0.25))
 # model is either a path to one you trained with openWakeWord, or the
 # name of one of theirs (hey_jarvis, alexa, hey_mycroft, hey_rhasspy).
 # There is no pretrained "hey Luna" - see wakeword.py.
-_wake_cfg = agent.get("wake_word", {})
+_wake_cfg = setting("wake_word", {})
 WAKE_WORD_ENABLED = bool(_wake_cfg.get("enabled", False))
 WAKE_WORD_MODEL = _wake_cfg.get("model", "hey_jarvis")
 # Raise if it fires at the television, lower if it ignores you.
@@ -230,27 +268,26 @@ WAKE_WORD_COOLDOWN = float(_wake_cfg.get("cooldown_seconds", 1.0))
 # loaded in LM Studio - a text-only model will reject the request and
 # the error is shown as-is. Optional "vision" block in agent.json:
 #   "vision": { "enabled": true, "scale": 0.5 }
-_vision_cfg = agent.get("vision", {})
+_vision_cfg = setting("vision", {})
 VISION_ENABLED = bool(_vision_cfg.get("enabled", False))
 # grim's own scale factor. Half a 4K screen is still plenty to read an
 # error dialog off, and a quarter of the bytes.
 VISION_SCALE = float(_vision_cfg.get("scale", 0.5))
 VISION_MAX_BYTES = int(_vision_cfg.get("max_kb", 4096)) * 1024
 
-_history_cfg = agent.get("history", {})
+_history_cfg = setting("history", {})
 MAX_RAW_MESSAGES = _history_cfg.get("max_raw_messages", 15)
 SUMMARIZE_CHUNK = _history_cfg.get("summarize_chunk", 8)
 # The running summary is re-compressed once it passes this, rather than
 # being appended to forever.
 SUMMARY_MAX_CHARS = int(_history_cfg.get("summary_max_chars", 2500))
 
-LONG_TERM_MEMORY_ENABLED = agent.get("long_term_memory", {}).get("enabled", True)
-LONG_TERM_MEMORY_MAX_FACTS = agent.get("long_term_memory", {}).get("max_facts", 40)
+_memory_cfg = setting("long_term_memory", {})
+LONG_TERM_MEMORY_ENABLED = _memory_cfg.get("enabled", True)
+LONG_TERM_MEMORY_MAX_FACTS = _memory_cfg.get("max_facts", 40)
 # How many facts may go into one system prompt. Under this, all of them
 # do; over it, the ones relevant to what was just said.
-LONG_TERM_MEMORY_CONTEXT_FACTS = agent.get("long_term_memory", {}).get(
-    "context_facts", 25
-)
+LONG_TERM_MEMORY_CONTEXT_FACTS = _memory_cfg.get("context_facts", 25)
 
 # -------------------------
 # Tool calling
@@ -259,15 +296,15 @@ LONG_TERM_MEMORY_CONTEXT_FACTS = agent.get("long_term_memory", {}).get(
 # for itself instead of relying on keyword triggers. Needs a model with
 # a tool template (Qwen, Llama 3.1+, Mistral, Hermes...); if the server
 # rejects the payload we fall back automatically at runtime.
-_tools_cfg = agent.get("tools", {})
+_tools_cfg = setting("tools", {})
 TOOLS_ENABLED = _tools_cfg.get("enabled", True)
 # How many times the model may call tools before it must answer in prose.
 MAX_TOOL_ROUNDS = int(_tools_cfg.get("max_rounds", 4))
 
-_reminders_cfg = agent.get("reminders", {})
+_reminders_cfg = setting("reminders", {})
 REMINDERS_ENABLED = _reminders_cfg.get("enabled", True)
 REMINDER_CHECK_INTERVAL_SECONDS = _reminders_cfg.get("check_interval_minutes", 10) * 60
 
-_web_search_cfg = agent.get("web_search", {})
+_web_search_cfg = setting("web_search", {})
 WEB_SEARCH_ENABLED = _web_search_cfg.get("enabled", True)
 WEB_SEARCH_MAX_RESULTS = _web_search_cfg.get("max_results", 5)

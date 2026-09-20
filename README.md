@@ -193,7 +193,7 @@ Chunks stay under the server's 1200-character limit.
 If the server isn't answering, the assistant says so and keeps working
 as a text chat.
 
-Optional `tts` block in `agent/agent.json`:
+In `config.json`:
 
 ```json
 "tts": {
@@ -206,11 +206,11 @@ Optional `tts` block in `agent/agent.json`:
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `KOKORO_URL` | `http://127.0.0.1:8899` | Server address |
-| `KOKORO_VOICE` | `agent.json` → `voice` | Voice (`af_bella`, `am_adam`, ...) |
+| `KOKORO_VOICE` | `config.json` → `voice` | Voice (`af_bella`, `am_adam`, ...) |
 | `KOKORO_SPEED` | `1.0` | 0.5 – 2.0 |
 | `KOKORO_VOLUME` | `1.0` | Playback gain |
 
-Environment variables win over `agent.json`.
+Environment variables win over `config.json`.
 
 ---
 
@@ -219,6 +219,49 @@ Environment variables win over `agent.json`.
 ```bash
 python main.py
 ```
+
+---
+
+# Configuration
+
+Two files, two jobs.
+
+| File | Holds | You edit it when |
+|------|-------|------------------|
+| `agent/agent.json` | Who she is — name, personality, tone, traits, rules | You want her to behave differently |
+| `config.json` | How the machine runs — voice, models, thresholds, timeouts, theme | You want it to work differently |
+
+They used to be one file, which meant tuning a VAD threshold and
+rewriting her personality were the same edit — and you couldn't share
+either one without handing over the other.
+
+Where both define a key, `config.json` wins. `agent.json` is still read
+as a fallback, so an older install that never split them keeps working
+untouched.
+
+Every block in `config.json` is optional and every value has a default
+in `config.py`, so a missing block means "use the defaults" rather than
+an error. The file that ships has them written out explicitly, because
+you can't turn a dial that isn't there.
+
+```json
+{
+    "voice": "af_bella",
+    "generation": { "max_tokens": 4800, "reasoning": "low" },
+    "stt":        { ... },
+    "tts":        { ... },
+    "vision":     { ... },
+    "wake_word":  { ... },
+    "tools":      { ... },
+    "web_search": { ... },
+    "reminders":  { ... },
+    "history":    { ... },
+    "long_term_memory": { ... }
+}
+```
+
+A syntax error in either file is reported and skipped rather than being
+fatal — hand-editing them is the whole point of their being JSON.
 
 ---
 
@@ -271,8 +314,8 @@ Terminals without truecolor fall back to the nearest 256-colour match.
 
 # Voice Modes
 
-How HOME behaves. Set `stt.mode` in `agent/agent.json` or switch live
-with `/mode <name>`.
+How HOME behaves. Set `stt.mode` in `config.json` or switch live with
+`/mode <name>`.
 
 | Mode | HOME | Recording ends when |
 |------|------|---------------------|
@@ -759,13 +802,13 @@ python3 kokoro-say.py                 # read the clipboard aloud through
                                       # the kokoro server - bind it to a key
 ```
 
-> `agent.json` and `agent/memory.json` are tracked so they ship with the
-> repo, which means a `git pull --rebase` will happily put the committed
-> copies back over your local tuning. If you edit them and don't want
-> that, tell git to leave your copies alone:
+> `config.json`, `agent/agent.json` and `agent/memory.json` are tracked
+> so they ship with the repo, which means a `git pull --rebase` will
+> happily put the committed copies back over your local tuning. If you
+> edit them and don't want that, tell git to leave your copies alone:
 >
 > ```bash
-> git update-index --skip-worktree agent/agent.json agent/memory.json
+> git update-index --skip-worktree config.json agent/agent.json agent/memory.json
 > ```
 >
 > `push.sh` already knows about skip-worktree files and won't warn about
@@ -780,6 +823,7 @@ ai-voice/
 │
 ├── ai-voice-ctl.py
 ├── assistant.py
+├── config.json
 ├── config.py
 ├── control.py
 ├── history.py
