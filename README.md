@@ -969,20 +969,50 @@ to judge — and to say it doesn't recall rather than stretch one to fit.
                                       # personal files still being tracked
 
 python3 kokoro-say.py                 # read the clipboard aloud through
-                                      # the kokoro server - bind it to a key
+                                      # the TTS server - bind it to a key
 ```
 
-> `config.json`, `agent/agent.json` and `agent/memory.json` are tracked
-> so they ship with the repo, which means a `git pull --rebase` will
-> happily put the committed copies back over your local tuning. If you
-> edit them and don't want that, tell git to leave your copies alone:
->
-> ```bash
-> git update-index --skip-worktree config.json agent/agent.json agent/memory.json
-> ```
->
-> `push.sh` already knows about skip-worktree files and won't warn about
-> them. The trade-off is that your local edits stop being pushed too.
+## What push.sh protects you from
+
+Two different problems, with opposite fixes.
+
+**Private files** — `history/conversation.json`,
+`history/transcript.jsonl`, `reminders/reminders.json` — should never
+be public at all. `.gitignore` covers them, but only while they're
+untracked: anything committed before a rule existed keeps getting
+updated, which is how a chat log ends up on GitHub without anyone
+deciding to put it there. `push.sh` spots those and prints the
+`git rm --cached` to drop them.
+
+**Personal files** — `config.json`, `agent/agent.json`,
+`agent/memory.json` — *should* ship, so a fresh clone works. But your
+copies are tuned to your machine, and a `git pull --rebase` will
+cheerfully put the committed versions back over them. `push.sh` offers
+to mark them `skip-worktree`, which keeps the published version intact
+while git stops watching yours:
+
+```
+3 file(s) ship with the repo but are tuned to this machine:
+  agent/agent.json
+  agent/memory.json
+  config.json
+Mark them now? [y/N] y
+  protected agent/agent.json
+  protected agent/memory.json
+  protected config.json
+```
+
+Say yes once and it stays quiet afterwards. The trade-off is that your
+local edits to those files stop being pushed — change the published
+defaults by unprotecting, committing, and protecting again.
+
+> One thing `skip-worktree` does *not* do is make a conflicting pull
+> seamless. If the remote changes a file you've protected, git refuses
+> the merge with "your local changes would be overwritten" and aborts.
+> That's the safe outcome — you're told rather than quietly losing work
+> — but it looks like a broken repo. `push.sh` detects that case before
+> you hit it and prints the way out: copy yours aside, unprotect, pull,
+> re-protect, merge back by hand.
 
 ---
 

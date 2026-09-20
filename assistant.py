@@ -5,6 +5,8 @@ from push-to-talk - so the two behave identically. That matters more
 than it sounds: before this they each had their own copy of "ask, then
 print, then speak", and the copies drifted.
 """
+import threading
+
 from config import AGENT_NAME
 from llm import ask
 from speech import record_audio, transcribe
@@ -14,6 +16,13 @@ import speech
 import state
 import ui
 
+# One turn at a time. Every Enter spawns its own worker, so without
+# this a second message sent while she's still speaking would run
+# alongside the first: two replies generating at once, both feeding the
+# same audio device, and history written in whatever order they
+# happened to finish.
+_turn = threading.Lock()
+
 
 def respond(text, model):
     """Send a turn to the model and speak the reply as it arrives.
@@ -22,7 +31,26 @@ def respond(text, model):
     it is generated and each finished sentence goes to the speaker
     immediately, so Luna starts talking about a sentence in rather than
     after the entire reply has been written.
+
+    Turns are serialized. Sending a second message while she's still
+    talking means you've moved on, so the previous reply stops being
+    spoken - but it is still allowed to finish generating and stays on
+    screen, the same bargain barge-in makes. Interrupting should cost
+    you the audio, never the answer.
     """
+    if _turn.locked():
+        logbook.info("turn", "new message while speaking - cutting the last one short")
+        state.stop_speaking = True
+
+    with _turn:
+        return _respond(text, model)
+
+
+def _respond(text, model):
+    # Only now, holding the lock: resetting this any earlier would
+    # clear the stop we just set on the turn we're waiting for.
+    state.stop_speaking = False
+
     player = speech.Player()
 
     ui.set_status("Thinking...")

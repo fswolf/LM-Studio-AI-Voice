@@ -144,9 +144,11 @@ def _process(text):
     ui.add_message("user", text)
 
     state.assistant_busy = True
-    state.stop_speaking = False
     state.stop_generating = False
     state.turn_source = "typed"
+    # stop_speaking is deliberately not reset here - assistant.respond()
+    # sets it to interrupt whatever is still talking, and clears it once
+    # it actually holds the turn.
 
     try:
         assistant.respond(text, MODEL)
