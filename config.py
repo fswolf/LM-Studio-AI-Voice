@@ -303,6 +303,22 @@ VISION_ENABLED = bool(_vision_cfg.get("enabled", False))
 VISION_SCALE = float(_vision_cfg.get("scale", 0.5))
 VISION_MAX_BYTES = int(_vision_cfg.get("max_kb", 4096)) * 1024
 
+# -------------------------
+# Desktop control
+# -------------------------
+# Acting on the desktop rather than only looking at it - playback,
+# volume, clipboard, window focus. Each tool checks for its own program
+# at call time, so a missing playerctl costs that one tool rather than
+# all four. Optional "desktop" block in config.json:
+#   "desktop": { "enabled": true, "clipboard": true }
+_desktop_cfg = setting("desktop", {})
+DESKTOP_ENABLED = bool(_desktop_cfg.get("enabled", True))
+# Separate from the rest, because reading the clipboard means whatever
+# you last copied - a password, an API key - can land in the model's
+# context and from there in history on disk. On by default, but it is
+# the one here worth knowing is a switch.
+DESKTOP_CLIPBOARD = bool(_desktop_cfg.get("clipboard", True))
+
 _history_cfg = setting("history", {})
 MAX_RAW_MESSAGES = _history_cfg.get("max_raw_messages", 15)
 SUMMARIZE_CHUNK = _history_cfg.get("summarize_chunk", 8)
@@ -396,6 +412,9 @@ SETTINGS = {
 
     "vision.enabled":             ("VISION_ENABLED",               True),
     "vision.scale":               ("VISION_SCALE",                 True),
+
+    "desktop.enabled":            ("DESKTOP_ENABLED",              True),
+    "desktop.clipboard":          ("DESKTOP_CLIPBOARD",            True),
 
     "wake_word.enabled":          ("WAKE_WORD_ENABLED",            False),
     "wake_word.model":            ("WAKE_WORD_MODEL",              False),

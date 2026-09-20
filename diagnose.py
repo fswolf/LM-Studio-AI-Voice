@@ -35,6 +35,14 @@ PROBES = (
     ("what reminders do I have?", "list_reminders"),
     ("what time is it?", "get_datetime"),
     ("remember that I stream on Tuesdays", "remember_fact"),
+    # Every tool added makes the choice harder, so the ones most likely
+    # to be confused with something else get a probe of their own.
+    # "turn the music down" has to beat set_volume against six other
+    # verbs in one enum, and "how much VRAM is free" is the one a model
+    # will happily answer from thin air if it doesn't reach for a tool.
+    ("turn the music down a bit", "control_audio"),
+    ("how much VRAM have I got free?", "system_status"),
+    ("what's on my clipboard?", "clipboard"),
 )
 
 INSTRUCTION = (

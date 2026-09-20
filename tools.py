@@ -18,7 +18,9 @@ model can talk about, not something that kills the turn.
 import json
 
 import config
+import desktop
 import longterm
+import machine
 import reminders
 import timeutil
 import transcript
@@ -419,6 +421,133 @@ def _look_at_screen(window=None, whole_screen=False, region=None):
         "message. Describe what you actually see in it; do not guess, "
         "and say so if it isn't what they meant."
     )
+
+
+# ---------------------------------------------------------------------------
+# The desktop
+# ---------------------------------------------------------------------------
+# One tool rather than six. "Turn it down", "skip this", "what's
+# playing" and "mute" are the same request to a person - do something
+# to the sound - and splitting them into six schemas costs selection
+# accuracy on a small model for no gain the user can feel.
+_AUDIO_ACTIONS = ("status", "play", "pause", "next", "previous", "stop",
+                  "louder", "quieter", "mute", "unmute", "set_volume")
+
+
+@tool(
+    "control_audio",
+    "Control playback and volume on the user's computer: pause or resume "
+    "music, skip a track, change or mute the volume, or report what is "
+    "playing. Use it whenever they ask about or ask you to change sound.",
+    {
+        "action": {
+            "type": "string",
+            "enum": list(_AUDIO_ACTIONS),
+            "description": "What to do. 'status' reports what is playing "
+                           "and how loud without changing anything.",
+        },
+        "level": {
+            "type": "integer",
+            "description": "Volume percent, 0-100. Only for set_volume.",
+        },
+    },
+    required=("action",),
+    available=lambda: desktop.media_available() or desktop.volume_available(),
+    why=lambda: (
+        'the desktop tools are off - set "desktop": {"enabled": true}'
+        if not config.DESKTOP_ENABLED else
+        "neither playerctl nor wpctl/pactl is installed"
+    ),
+)
+def _control_audio(action, level=None):
+    action = str(action or "").strip().lower()
+
+    if action == "set_volume":
+        if level is None:
+            return "Ask the user what volume they want - no level was given."
+
+        return desktop.set_volume(level)
+
+    if action in ("louder", "quieter"):
+        return desktop.nudge_volume(10 if action == "louder" else -10)
+
+    if action in ("mute", "unmute"):
+        return desktop.set_muted(action == "mute")
+
+    if action == "status":
+        return f"{desktop.now_playing()} {desktop.describe_volume()}"
+
+    if action not in _AUDIO_ACTIONS:
+        return f"No audio action called {action!r}. Try: {', '.join(_AUDIO_ACTIONS)}"
+
+    if not desktop.media_available():
+        return "There's no media player control installed (playerctl)."
+
+    return desktop.playback(action)
+
+
+@tool(
+    "clipboard",
+    "Read what the user last copied, or put text on their clipboard so "
+    "they can paste it. Use 'read' when they refer to something they "
+    "copied without saying what it is.",
+    {
+        "action": {
+            "type": "string",
+            "enum": ["read", "write"],
+            "description": "'read' returns the clipboard's contents; "
+                           "'write' replaces them.",
+        },
+        "text": {
+            "type": "string",
+            "description": "What to copy. Only for 'write'.",
+        },
+    },
+    required=("action",),
+    available=desktop.clipboard_available,
+    why=desktop.why_no_clipboard,
+)
+def _clipboard(action, text=None):
+    if str(action or "").strip().lower() == "write":
+        return desktop.write_clipboard(text)
+
+    return desktop.read_clipboard()
+
+
+@tool(
+    "focus_window",
+    "Bring one of the user's windows to the front - switch to it. This "
+    "changes what is on screen; to look at a window without switching "
+    "to it, use look_at_screen instead.",
+    {
+        "name": {
+            "type": "string",
+            "description": "The window as the user named it - 'firefox', "
+                           "'my browser', 'the code editor'.",
+        },
+    },
+    required=("name",),
+    available=desktop.windows_available,
+    why=lambda: (
+        'the desktop tools are off - set "desktop": {"enabled": true}'
+        if not config.DESKTOP_ENABLED else
+        "hyprctl isn't there - window switching needs Hyprland"
+    ),
+)
+def _focus_window(name):
+    return desktop.focus(name)
+
+
+@tool(
+    "system_status",
+    "Check the computer's own state: free VRAM, GPU temperature and "
+    "load, free RAM and disk, and which model LM Studio has loaded. Use "
+    "it before answering whether something will fit or why things are "
+    "slow - never guess these numbers.",
+    {},
+)
+def _system_status():
+    return machine.describe()
 
 
 # ---------------------------------------------------------------------------

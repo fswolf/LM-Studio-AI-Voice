@@ -429,7 +429,7 @@ def handle_input(text):
     if text == "/tooltest":
         ui.add_message(
             "system",
-            "Running the tool-calling check - ten requests, a minute or "
+            "Running the tool-calling check - sixteen requests, a minute or "
             "two on a local model. Results appear as they finish. "
             "Nothing is scheduled or remembered.",
         )

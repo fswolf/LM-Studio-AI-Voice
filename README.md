@@ -278,6 +278,7 @@ you can't turn a dial that isn't there.
     "stt":        { ... },
     "tts":        { ... },
     "vision":     { ... },
+    "desktop":    { ... },
     "wake_word":  { ... },
     "tools":      { ... },
     "web_search": { ... },
@@ -645,6 +646,10 @@ check the time, then schedule something.
 | `remember_fact` / `recall_facts` | Long-term memory, written deliberately |
 | `forget_fact` / `update_fact` | Correct it when it got something wrong |
 | `look_at_screen` | Take a screenshot and actually see it (optional) |
+| `control_audio` | Playback and volume — pause, skip, louder, mute |
+| `clipboard` | Read what you copied, or put something there to paste |
+| `focus_window` | Switch to a window, named the way you'd name it |
+| `system_status` | Free VRAM, GPU temp and load, RAM, disk, loaded model |
 | `read_page` | Open a link and read it, not just the search snippet |
 | `search_history` | Look through past conversations for something |
 | `web_search` | DuckDuckGo, for anything it can't know |
@@ -666,6 +671,67 @@ a reminder appeared:
 sys  │ set_reminder() -> Scheduled: 14:40 - stretch (in 10m)
 ```
 
+## The desktop tools
+
+`vision.py` taught her to *see* the desktop. These are the other half —
+acting on it.
+
+```
+you  │ turn the music down and tell me what's playing
+sys  │ control_audio() -> Volume set to 45%. Chvrches - The Mother We Share (playing)
+
+you  │ what did I just copy?
+sys  │ clipboard() -> The clipboard holds: https://github.com/fswolf/kokoro-reader
+
+you  │ how much VRAM have I got free?
+sys  │ system_status() -> GPU: AMD Radeon RX 6950 XT, VRAM 9.0 of 16.0 GB used
+     │ (7.0 GB free), 37% busy, 61C, 94W | RAM: 12.4 of 31.3 GB used | LM Studio: qwen3.5-9b...
+```
+
+Notes on how these are built, since the choices aren't obvious:
+
+* **`control_audio` is one tool, not six.** "Turn it down", "skip this",
+  "what's playing" and "mute" are all *do something to the sound* to a
+  person, and six separate schemas would cost selection accuracy on a
+  small model for nothing anyone can feel. One tool, one `action` enum.
+* **Volume reads before it writes.** `wpctl set-volume 5%+` would be one
+  call, but then the answer to "turn it down" is "done", which isn't an
+  answer when you wanted to know how far down. It reads, adds, sets, and
+  reports where it landed.
+* **`focus_window` reuses `vision.find_window`.** "My browser" has to
+  mean the same window whether she's looking at it or switching to it,
+  and two matchers would drift apart inside a week.
+* **`system_status` reads sysfs, not `rocm-smi`.** amdgpu already
+  exports VRAM, temperature, load and power under
+  `/sys/class/drm/card*/device/`, so there's nothing to install, no
+  table format that changes between releases, and no subprocess to
+  hang. `nvidia-smi` is used only on the NVIDIA path, where sysfs
+  doesn't carry the same numbers.
+* **Everything shells out with a 5s timeout.** These aren't hot paths,
+  and a wedged media player should cost a moment rather than the turn.
+
+```json
+"desktop": {
+    "enabled": true,
+    "clipboard": true
+}
+```
+
+`clipboard` is its own switch on purpose. Reading the clipboard means
+whatever you last copied — a password, an API key — can land in the
+model's context and from there in `history/conversation.json` on disk.
+On by default, but worth knowing where the switch is.
+
+Needs `playerctl` for playback, `wpctl` or `pactl` for volume,
+`wl-clipboard` for the clipboard, and `hyprctl` for window switching.
+Each is checked independently, so a missing `playerctl` costs that one
+tool rather than all four — `/tools` says which and why.
+
+```
+dnf install playerctl wl-clipboard      # Fedora
+apt install playerctl wl-clipboard      # Debian/Ubuntu
+```
+
 ## Checking a model actually calls them
 
 Offering tools and using them are different things. A model will
@@ -673,7 +739,7 @@ happily say "Got it, setting that for you!" and call nothing, which
 fails silently and totally — a confident confirmation and nothing
 scheduled.
 
-`/tooltest` asks it directly. Five blunt requests, each run twice —
+`/tooltest` asks it directly. Eight blunt requests, each run twice —
 streamed and blocking — reporting what came back:
 
 ```
@@ -682,12 +748,19 @@ streamed and blocking — reporting what came back:
     streamed  ok           text='eat chocolate', when='in 5 minutes'
     blocking  ok           text='eat chocolate', when='in 5 minutes'
 
-  streamed 5/5   blocking 5/5
+  streamed 8/8   blocking 8/8
   Tool calling is healthy here.
 ```
 
 Nothing is scheduled or remembered — the model is asked what it *would*
 call and the answers are discarded.
+
+The probe list leans on the tools most easily confused with something
+else — "turn the music down" has to pick `control_audio` and then the
+right action out of an eleven-value enum, and "how much VRAM is free"
+is a question a model will cheerfully answer from thin air. **Run this
+after adding a tool.** Every tool you add makes the choice harder; if
+the score starts slipping, you've added one too many.
 
 The two modes are the diagnosis. Tool calls arrive whole in a blocking
 response and in fragments when streamed, so comparing them says whose
@@ -1194,6 +1267,7 @@ ai-voice/
 ├── config.json
 ├── config.py
 ├── control.py
+├── desktop.py
 ├── diagnose.py
 ├── history.py
 ├── kokoro-say.py
@@ -1201,6 +1275,7 @@ ai-voice/
 ├── lmstudio.py
 ├── logbook.py
 ├── longterm.py
+├── machine.py
 ├── main.py
 ├── ptt.py
 ├── push.sh
