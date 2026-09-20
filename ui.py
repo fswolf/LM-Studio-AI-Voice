@@ -31,6 +31,7 @@ from prompt_toolkit.layout import (
 )
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
+from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import TextArea
 
@@ -458,6 +459,30 @@ def _scroll_position(window):
     return _desired_top()
 
 
+# One notch of the wheel. Three lines is what terminals and editors
+# have settled on; a full page per notch overshoots badly on a trackpad,
+# which sends a flurry of these.
+WHEEL_LINES = 3
+
+
+def _scroll_by(lines):
+    """Move the view. Positive is backwards in time.
+
+    Clamped at both ends: 0 is pinned to the newest line, and the top
+    stop is the oldest line that can still fill the pane. Without the
+    upper clamp the wheel happily winds _scrollback into the thousands
+    and then needs the same number of notches back before anything
+    moves again.
+    """
+    global _scrollback
+
+    _scrollback = max(0, min(
+        _scrollback + lines,
+        max(0, len(_conversation_lines()) - _window_height()),
+    ))
+    _refresh()
+
+
 def _conversation_cursor():
     """Report the cursor on the same line we're scrolling to.
 
@@ -470,6 +495,31 @@ def _conversation_cursor():
     library with nothing to correct.
     """
     return Point(x=0, y=_desired_top())
+
+
+class _ConversationControl(FormattedTextControl):
+    """The conversation pane, with a wheel that actually scrolls it.
+
+    Window handles wheel events on its own by nudging `vertical_scroll`
+    - which does nothing here, because `get_vertical_scroll` recomputes
+    that from `_scrollback` on every render and overwrites it. So the
+    wheel was silently dead whenever mouse capture was on.
+
+    Moving `_scrollback` instead puts the wheel and PgUp/PgDn on the
+    same mechanism, with the same clamps, so they can't disagree about
+    where the view is.
+    """
+
+    def mouse_handler(self, mouse_event):
+        if mouse_event.event_type == MouseEventType.SCROLL_UP:
+            _scroll_by(WHEEL_LINES)
+            return None
+
+        if mouse_event.event_type == MouseEventType.SCROLL_DOWN:
+            _scroll_by(-WHEEL_LINES)
+            return None
+
+        return super().mouse_handler(mouse_event)
 
 
 def _keyed(text, label_style="class:footer"):
@@ -498,7 +548,7 @@ _HELP_SECTIONS = [
     ("Keys", [
         ("(HOME)", None),  # filled in from the current mode
         ("(Enter)", "send message"),
-        ("(PgUp/PgDn)", "scroll the conversation"),
+        ("(PgUp/PgDn)", "scroll the conversation - or the wheel, with F2 on"),
         ("(F2)", "mouse capture: wheel scroll vs selecting text"),
         ("(End)", "jump back to newest"),
         ("(Tab)", "close this window"),
@@ -651,8 +701,9 @@ def _build_keys():
         on = toggle_mouse()
         add_message(
             "system",
-            "Mouse capture on - the wheel scrolls, but you can't select "
-            "text. F2 again to swap back."
+            "Mouse capture on - the wheel scrolls the conversation. Most "
+            "terminals still let you select with Shift held down. F2 "
+            "again to swap back."
             if on else
             "Mouse capture off - select and copy normally. PgUp/PgDn "
             "scroll; F2 to get the wheel back.",
@@ -684,21 +735,14 @@ def _build_keys():
 
     @keys.add("pageup")
     def _(event):
-        global _scrollback
         # A page, not a few lines: the view only moves once the cursor
         # leaves the viewport, so nudging it 5 lines looks like nothing
-        # happened. Clamped so it can't walk past the oldest line.
-        _scrollback = min(
-            _scrollback + _page_size(),
-            max(0, len(_conversation_lines()) - _window_height()),
-        )
-        _refresh()
+        # happened.
+        _scroll_by(_page_size())
 
     @keys.add("pagedown")
     def _(event):
-        global _scrollback
-        _scrollback = max(0, _scrollback - _page_size())
-        _refresh()
+        _scroll_by(-_page_size())
 
     @keys.add("end")
     def _(event):
@@ -742,7 +786,7 @@ def run(on_submit, on_hotkey=None):
     # top of the screen and the input box off the bottom. Giving it a
     # weight instead makes it take the leftover space and scroll.
     conversation_window = Window(
-        content=FormattedTextControl(
+        content=_ConversationControl(
             _conversation_fragments,
             get_cursor_position=_conversation_cursor,
         ),

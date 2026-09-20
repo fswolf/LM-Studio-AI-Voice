@@ -516,8 +516,8 @@ def handle_input(text):
 
         ui.add_message(
             "system",
-            ("Mouse capture on - the wheel scrolls, but text can't be "
-             "selected." if on else
+            ("Mouse capture on - the wheel scrolls the conversation. Hold "
+             "Shift to select text." if on else
              "Mouse capture off - select and copy normally; PgUp/PgDn "
              "scroll.") + saved,
         )
