@@ -238,6 +238,14 @@ def toggle_mouse(on=None):
     return _mouse
 
 
+def set_voice(name: str):
+    """Update the Voice row. /voice can change this mid-session, and a
+    header still showing the old name is worse than no header."""
+    with _lock:
+        state["voice"] = name
+    _refresh()
+
+
 def set_model(label: str):
     """Update the Model row - it now shows health, not just a name."""
     with _lock:
@@ -578,6 +586,7 @@ _HELP_SECTIONS = [
         ("/log", "tail the debug log"),
         ("/mouse", "same as F2, and saves the choice"),
         ("/set", "list or change any setting, saved"),
+        ("/voice", "list voices, or switch - blends too"),
         ("/tools", "which tools the model can call"),
         ("/tooltest", "does this model actually call them?"),
         ("/plugins", "add-ons, and /<name> on|off for each"),

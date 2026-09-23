@@ -475,6 +475,72 @@ def handle_input(text):
         threading.Thread(target=check, daemon=True).start()
         return
 
+    if text.startswith("/voice"):
+        wanted = text[6:].strip()
+
+        def show():
+            """Ask the server what it has. It is the only thing that
+            knows - a blend named in the server's blends.json is real to
+            it and invisible from here, so listing a hardcoded set would
+            be wrong the moment anyone added one."""
+            try:
+                import requests
+
+                data = requests.get(
+                    f"{config.TTS_URL}/voices", timeout=5
+                ).json()
+            except Exception as e:
+                return f"Couldn't ask {config.TTS_URL} what voices it has: {e}"
+
+            offered = data.get("voices") or []
+            recipes = data.get("blends") or {}
+            lines = [f"Voice: {config.VOICE}", ""]
+
+            if recipes:
+                lines.append("  blends")
+
+                for name in sorted(recipes):
+                    mark = "*" if name == config.VOICE else " "
+                    lines.append(f"  {mark} {name:<16} {recipes[name]}")
+
+                lines.append("")
+
+            plain = [v for v in offered if v not in recipes]
+
+            if plain:
+                lines.append("  voices")
+                # Four to a row; thirty of them one per line is a wall.
+                for index in range(0, len(plain), 4):
+                    row = plain[index:index + 4]
+                    lines.append("    " + "  ".join(f"{v:<14}" for v in row))
+
+            lines.append("")
+            lines.append("  /voice <name>            switch, and save it")
+            lines.append("  /voice af_bella:6,af_sky:4   blend inline")
+
+            return "\n".join(lines)
+
+        if not wanted:
+            ui.add_message("system", show())
+            return
+
+        was = config.VOICE
+
+        try:
+            # Not validated against the list on purpose: an inline blend
+            # is a perfectly good voice and will never appear in it.
+            config.save_setting("voice", wanted)
+        except Exception as e:
+            ui.add_message("system", f"Couldn't save that: {e}")
+            return
+
+        ui.set_voice(wanted)
+        ui.add_message(
+            "system",
+            f"Voice: {was} -> {wanted}. Applies to the next thing she says.",
+        )
+        return
+
     if text.strip() in ("/plugins", "/plugin"):
         ui.add_message("system", plugins.overview())
         return

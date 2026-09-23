@@ -458,7 +458,6 @@ PAGE_TIMEOUT = float(_web_search_cfg.get("page_timeout", 20))
 # ---------------------------------------------------------------------------
 SETTINGS = {
     # path in config.json          constant        applies without a restart
-    "voice":                      ("VOICE",                        False),
     "generation.max_tokens":      (None,                           False),
     "generation.reasoning":       (None,                           False),
 
@@ -481,6 +480,12 @@ SETTINGS = {
     "tts.speed":                  ("TTS_SPEED",                    True),
     "tts.volume":                 ("TTS_VOLUME",                   True),
     "tts.pitch":                  ("TTS_PITCH",                    True),
+    # Live now, where it used to need a restart: speech.py reads
+    # config.VOICE per request rather than importing the value, so
+    # /voice can audition a blend while she's mid-conversation. The
+    # name goes to the server untouched and the server resolves it -
+    # nothing here needs to know what a blend is.
+    "voice":                      ("VOICE",                        True),
     "tts.url":                    ("TTS_URL",                      False),
 
     "ui.mouse":                   ("UI_MOUSE",                     True),

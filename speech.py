@@ -19,7 +19,6 @@ import config
 
 from config import (
     SAMPLE_RATE,
-    VOICE,
     TTS_URL,
     TTS_ADDRESS,
     STT_MODEL,
@@ -602,7 +601,8 @@ def _synthesize(text):
     try:
         response = requests.post(
             f"{TTS_URL}/tts",
-            json={"text": text, "voice": VOICE, "speed": config.TTS_SPEED},
+            json={"text": text, "voice": config.VOICE,
+                  "speed": config.TTS_SPEED},
             timeout=180,
         )
         response.raise_for_status()
