@@ -564,6 +564,39 @@ def _decode(payload):
     return np.clip(samples, -1.0, 1.0), rate
 
 
+def _shift_pitch(samples, semitones):
+    """Move the pitch, and the formants with it.
+
+    Deliberately the naive version: resample the audio, then declare the
+    result to be at the original rate. That moves pitch and formants
+    together, which is what makes a voice read as a *different person* -
+    younger or older - rather than the same person singing higher.
+
+    A formant-preserving shift is the more sophisticated tool and the
+    wrong one here. It keeps the speaker's identity and only moves the
+    note, which is what you want for music and not at all what you want
+    for "give me a younger-sounding character".
+
+    Linear interpolation rather than a windowed resampler: this runs on
+    every chunk in the streaming path, the shifts in use are small, and
+    at 24 kHz the aliasing it introduces sits above anything the voice
+    is doing.
+    """
+    if abs(semitones) < 0.01 or len(samples) < 2:
+        return samples
+
+    # Twelve semitones to an octave; an octave is a doubling.
+    ratio = 2.0 ** (semitones / 12.0)
+    wanted = int(len(samples) / ratio)
+
+    if wanted < 2:
+        return samples
+
+    position = np.linspace(0, len(samples) - 1, wanted)
+
+    return np.interp(position, np.arange(len(samples)), samples).astype(np.float32)
+
+
 def _synthesize(text):
     """POST one chunk to /tts and decode the WAV it returns."""
     try:
@@ -584,8 +617,9 @@ def _synthesize(text):
     _set_reachable(True)
 
     samples, rate = _decode(response.content)
+    samples = _shift_pitch(samples, config.TTS_PITCH)
 
-    return samples * config.TTS_VOLUME, rate
+    return np.clip(samples * config.TTS_VOLUME, -1.0, 1.0), rate
 
 
 def _play(samples, rate):

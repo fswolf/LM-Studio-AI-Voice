@@ -1,0 +1,13 @@
+# chatterbox-tts is installed with --no-deps (see setup.sh), so its
+# dependencies are listed here instead - minus torch, which comes from
+# the ROCm index first and must not be replaced by a CUDA build.
+numpy>=1.26
+librosa>=0.10
+transformers>=4.46
+diffusers>=0.29
+resemble-perth>=1.0
+conformer>=0.3
+safetensors>=0.4
+einops>=0.8
+omegaconf>=2.3
+s3tokenizer

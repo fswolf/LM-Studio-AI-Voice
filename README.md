@@ -200,15 +200,34 @@ In `config.json`:
 "tts": {
     "url": "http://127.0.0.1:8899",
     "speed": 1.0,
-    "volume": 1.0
+    "volume": 1.0,
+    "pitch": 0.0
 }
 ```
+
+`pitch` is in semitones, applied to the audio after it comes back — so
+it works with whatever engine is on the port, not just Kokoro. `+3` is
+noticeably younger, `-3` older, and past about `±6` it stops sounding
+like a person.
+
+It shifts the formants along with the pitch, which is the naive
+resample and deliberately so: a formant-preserving shift keeps the same
+speaker's identity and only moves the note, which is right for music
+and wrong for "give me a younger-sounding character". Moving them
+together is what reads as a different person.
+
+```
+/set tts.pitch 3
+```
+
+applies immediately — no restart, so you can dial it in while she talks.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `TTS_URL` | `http://127.0.0.1:8899` | Server address |
 | `TTS_VOICE` | `config.json` → `voice` | Voice (`af_bella`, `am_adam`, ...) |
 | `TTS_SPEED` | `1.0` | 0.5 – 2.0 |
+| `TTS_PITCH` | `0.0` | Semitones. `+3` younger, `-3` older |
 | `TTS_VOLUME` | `1.0` | Playback gain |
 
 Environment variables win over `config.json`. The `KOKORO_*` names still

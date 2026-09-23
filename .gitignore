@@ -14,6 +14,11 @@ Claude outputs/
 ai-voice-venv/
 .venv/
 venv/
+server-*/venv/
+
+# Reference voice clips are recordings, not source.
+server-*/voices/*
+!server-*/voices/README.md
 
 # Plugins are private by default: anything you drop in plugins/ is
 # yours - channel names, account names, whatever you wire her up to -

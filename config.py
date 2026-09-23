@@ -97,6 +97,15 @@ def _tts_env(name, fallback):
 TTS_URL = str(_tts_env("URL", _tts_cfg.get("url", "http://127.0.0.1:8899"))).rstrip("/")
 TTS_SPEED = float(_tts_env("SPEED", _tts_cfg.get("speed", 1.0)))
 TTS_VOLUME = float(_tts_env("VOLUME", _tts_cfg.get("volume", 1.0)))
+# Semitones. Positive is higher and younger-sounding, negative lower and
+# older. Applied here rather than in the speech server, so it works with
+# whichever engine is on the port - Kokoro today, something else later.
+#
+# Deliberately shifts the formants along with the pitch, which is what a
+# naive resample does. A formant-preserving shift keeps the same person
+# sounding like themselves an octave up; moving them together is what
+# reads as a different age of person, which is the point here.
+TTS_PITCH = float(_tts_env("PITCH", _tts_cfg.get("pitch", 0.0)))
 VOICE = _tts_env("VOICE", setting("voice", "af_bella"))
 
 # Shown on the UI's TTS line.
@@ -471,6 +480,7 @@ SETTINGS = {
 
     "tts.speed":                  ("TTS_SPEED",                    True),
     "tts.volume":                 ("TTS_VOLUME",                   True),
+    "tts.pitch":                  ("TTS_PITCH",                    True),
     "tts.url":                    ("TTS_URL",                      False),
 
     "ui.mouse":                   ("UI_MOUSE",                     True),
