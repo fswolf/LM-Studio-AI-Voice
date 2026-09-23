@@ -25,9 +25,15 @@ information, not carried around as state - and daily repeats recompute
 from the wall clock rather than adding 24 hours, which is where the
 DST bug would actually have bitten.
 """
+import contextvars
 import re
 import time as _time
 from datetime import datetime, timedelta
+
+# Whether a bare hour with no am/pm should read as morning. A context
+# variable rather than a module global so two threads - the reminder
+# scanner and whoever is typing - can't read each other's setting.
+_MORNING = contextvars.ContextVar("morning", default=False)
 
 # ---------------------------------------------------------------------------
 # Vocabulary
@@ -44,6 +50,18 @@ WEEKDAYS = {
 
 WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday",
                  "Friday", "Saturday", "Sunday"]
+
+# Named sets of days, because "every weekday at 7" is the single most
+# common alarm anyone sets and it is not a weekly repeat - it fires five
+# times a week, which {"weekday": n} cannot express.
+DAY_SETS = {
+    "weekday": (0, 1, 2, 3, 4),
+    "weekdays": (0, 1, 2, 3, 4),
+    "workday": (0, 1, 2, 3, 4),
+    "workdays": (0, 1, 2, 3, 4),
+    "weekend": (5, 6),
+    "weekends": (5, 6),
+}
 
 MONTHS = {
     "january": 1, "jan": 1, "february": 2, "feb": 2, "march": 3, "mar": 3,
@@ -261,6 +279,25 @@ def describe_repeat(repeat):
     if not repeat:
         return ""
 
+    if repeat.get("days"):
+        days = sorted(set(repeat["days"]))
+        at = repeat.get("at", "?")
+
+        # "every weekday" rather than a five-name list, because this is
+        # spoken aloud and nobody says Monday-Tuesday-Wednesday-Thursday-
+        # Friday out loud.
+        if days == [0, 1, 2, 3, 4]:
+            return f"every weekday at {at}"
+
+        if days == [5, 6]:
+            return f"every weekend day at {at}"
+
+        names = [WEEKDAY_NAMES[d] for d in days]
+
+        return "every {} and {} at {}".format(
+            ", ".join(names[:-1]), names[-1], at
+        )
+
     if repeat.get("weekday") is not None:
         return f"every {WEEKDAY_NAMES[repeat['weekday']]} at {repeat.get('at', '?')}"
 
@@ -358,6 +395,14 @@ def _bare(hour, minute):
     if hour >= 13:
         return hour, minute, False
 
+    # An alarm inverts the default: "wake me at 6" has never once in the
+    # history of alarm clocks meant six in the evening. Set for the whole
+    # parse rather than passed down, because the hour is read six call
+    # levels below parse_when and threading a flag through all of them to
+    # reach one `if` is worse than this.
+    if _MORNING.get():
+        return hour, minute, True
+
     # The daytime reading is the better default on its own - "at 3"
     # means the afternoon - but it stays flagged as a guess.
     if 1 <= hour <= 6:
@@ -426,6 +471,21 @@ def next_weekday(reference, weekday, hour=9, minute=0, force_next=False):
         candidate += timedelta(days=7)
 
     return candidate
+
+
+def next_in_days(reference, days, hour, minute, force_next=False):
+    """The soonest of several weekdays at that time, strictly ahead.
+
+    Just next_weekday() over a set and taking the nearest, which is all
+    "every weekday at 7:30" needs - Friday's 7:30 rolls to Monday's on
+    its own because each candidate is already pushed into the future.
+    """
+    candidates = [
+        next_weekday(reference, day, hour, minute, force_next=force_next)
+        for day in sorted(set(days))
+    ]
+
+    return min(candidates) if candidates else None
 
 
 def _add_months(moment, count):
@@ -662,6 +722,65 @@ def _resolve_date(text, reference):
 
 
 # --- repeats ---------------------------------------------------------------
+def _day_set(text):
+    """'weekdays', 'monday and thursday', 'mon, wed, fri' -> (0, 3).
+
+    Returns None unless *every* part is a day, so "green and blue" can't
+    quietly become an empty schedule that never fires.
+    """
+    days = set()
+
+    for part in re.split(r"\s*(?:,|/|and|&)\s*", text.strip().lower()):
+        part = part.strip()
+
+        if part in DAY_SETS:
+            days.update(DAY_SETS[part])
+        elif part in WEEKDAYS:
+            days.add(WEEKDAYS[part])
+        elif part:
+            return None
+
+    return tuple(sorted(days)) or None
+
+
+def _day_set_repeat(body, reference):
+    """'weekdays at 7:30', 'monday and thursday at 7', 'mon, wed, fri'.
+
+    A set of days, not one - so it is not the weekly repeat below. Only
+    fires for two days or more: a single day is already stored as
+    {"weekday": n} in everybody's reminders.json and a second encoding
+    of the same schedule is how the two of them drift apart.
+    """
+    match = re.match(
+        r"^([a-z]+(?:\s*(?:,|/|and|&)\s*[a-z]+)*)"
+        r"(?:\s+(?:at|around|in\s+the)?\s*(.+))?$",
+        body,
+    )
+
+    if not match:
+        return None
+
+    days = _day_set(match.group(1))
+
+    if not days or len(days) < 2:
+        return None
+
+    rest = match.group(2)
+    hour, minute = 9, 0
+
+    if rest:
+        clock = _shift_pm(_time_or_part(rest), rest in ("night", "evening"))
+
+        if clock is None:
+            return None
+
+        hour, minute = clock
+
+    due = next_in_days(reference, days, hour, minute)
+
+    return due, {"at": due.strftime("%H:%M"), "days": list(days)}
+
+
 def _resolve_repeat(text, reference):
     """'every 30 minutes', 'every morning at 8', 'every monday at 9',
     'daily', 'hourly'. Returns (due, repeat) or None."""
@@ -698,7 +817,10 @@ def _resolve_repeat(text, reference):
     match = re.match(r"^(?:every|each)\s+(.+)$", text)
 
     if not match:
-        return None
+        # No "every" in front. A plural day set is the only thing that
+        # repeats on its own - "weekdays at 7" has no one-off reading,
+        # whereas "30 minutes" very much does, so nothing else gets in.
+        return _day_set_repeat(text.strip(), reference)
 
     body = match.group(1).strip()
 
@@ -718,6 +840,11 @@ def _resolve_repeat(text, reference):
             if amount and amount > 0:
                 return _delta(amount, unit, reference), \
                     {"amount": amount, "unit": unit}
+
+    grouped = _day_set_repeat(body, reference)
+
+    if grouped:
+        return grouped
 
     # every monday [at 9] - weekly on a named day
     weekly = re.match(
@@ -772,7 +899,7 @@ def _resolve_repeat(text, reference):
     return None
 
 
-def parse_when(phrase, reference=None):
+def parse_when(phrase, reference=None, morning=False):
     """Natural language in, (datetime, repeat) out.
 
     This is the whole point of the module. The model is asked for the
@@ -782,6 +909,9 @@ def parse_when(phrase, reference=None):
 
     Returns (None, None) when the phrase doesn't describe a time, which
     the caller should treat as "ask the user", never as "guess".
+
+    `morning=True` is for alarms: it makes a bare "6" mean six in the
+    morning instead of six in the evening. An explicit "6pm" still wins.
     """
     reference = reference or now()
     text = _clean(phrase)
@@ -789,12 +919,17 @@ def parse_when(phrase, reference=None):
     if not text:
         return None, None
 
-    repeated = _resolve_repeat(text, reference)
+    token = _MORNING.set(bool(morning))
 
-    if repeated:
-        return repeated
+    try:
+        repeated = _resolve_repeat(text, reference)
 
-    return _resolve_once(text, reference), None
+        if repeated:
+            return repeated
+
+        return _resolve_once(text, reference), None
+    finally:
+        _MORNING.reset(token)
 
 
 def next_occurrence(repeat, reference=None, after=None):
@@ -833,6 +968,12 @@ def next_occurrence(repeat, reference=None, after=None):
 
 
 def _step(repeat, reference):
+    if repeat.get("days"):
+        hour, minute = _hm(repeat.get("at", "09:00")) or (9, 0)
+
+        return next_in_days(reference, repeat["days"], hour, minute,
+                            force_next=True)
+
     if repeat.get("weekday") is not None:
         hour, minute = _hm(repeat.get("at", "09:00")) or (9, 0)
 

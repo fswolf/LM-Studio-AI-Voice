@@ -229,19 +229,111 @@ def handle_input(text):
         )
         return
 
+    if text == "/alarms":
+        items = [r for r in reminders.pending() if reminders.is_alarm(r)]
+
+        if not items:
+            ui.add_message(
+                "system",
+                "No alarms set. /alarm <time> sets one - /alarm 7:30am, "
+                "/alarm every weekday at 6.",
+            )
+        else:
+            # Numbered against the full pending list, not this filtered
+            # one, so the number you read here is the number /cancel
+            # takes. Two numbering schemes for one store is how you end
+            # up cancelling the wrong thing at half six in the morning.
+            everything = reminders.pending()
+            listing = "\n".join(
+                f"  {everything.index(r) + 1}. {reminders.describe(r)}"
+                for r in items
+            )
+            ui.add_message(
+                "system",
+                f"{len(items)} alarm(s):\n{listing}\n"
+                "/cancel <number> removes one.",
+            )
+        return
+
+    if text.startswith("/snooze") or text.startswith("/alarm"):
+        import alarm
+
+        if text.startswith("/snooze"):
+            argument = text[7:].strip()
+            minutes = int(argument) if argument.isdigit() else config.ALARM_SNOOZE_MINUTES
+
+            if not alarm.dismiss(minutes):
+                ui.add_message("system", "Nothing is ringing.")
+            return
+
+        argument = text[6:].strip()
+
+        # "off" while it is ringing means stop; "off" at any other time
+        # would have to mean something about the schedule, and guessing
+        # between those two at 7am is not a risk worth taking.
+        if argument in ("off", "stop", "dismiss"):
+            if not alarm.dismiss(0):
+                ui.add_message("system", "Nothing is ringing.")
+            return
+
+        if argument == "test":
+            ui.add_message("system", "Playing the alarm tone once.")
+            threading.Thread(target=alarm.play_tone, daemon=True).start()
+            return
+
+        if not argument:
+            ui.add_message(
+                "system",
+                "Usage: /alarm <time> - e.g. /alarm 7:30am, "
+                "/alarm every weekday at 6.\n"
+                "  /alarm off    stop one that's ringing\n"
+                "  /alarm test   hear the tone\n"
+                "  /alarms       list them\n"
+                "  /snooze [n]   ring again in n minutes "
+                f"(default {config.ALARM_SNOOZE_MINUTES})",
+            )
+            return
+
+        due, repeat = timeutil.parse_when(argument, morning=True)
+
+        if due is None:
+            ui.add_message(
+                "system",
+                f"{argument!r} -> not a time I can read. Try /when {argument} "
+                "to see how the parser reads it.",
+            )
+            return
+
+        ui.add_message(
+            "system",
+            "Alarm set: " + reminders.describe(
+                reminders.add("wake up", due, repeat, kind="alarm")
+            ),
+        )
+        return
+
     if text.startswith("/when"):
         phrase = text[5:].strip()
+
+        # "/when alarm 6" reads it the way an alarm would, where a bare
+        # 6 is the morning. Without this the check disagrees with the
+        # thing it is supposed to be checking.
+        morning = phrase.lower().startswith("alarm ")
+
+        if morning:
+            phrase = phrase[6:].strip()
 
         if not phrase:
             ui.add_message(
                 "system",
                 "Usage: /when <phrase> - e.g. /when next friday at 4pm. "
                 "Shows how the reminder parser reads it, without "
-                "scheduling anything.",
+                "scheduling anything. /when alarm <phrase> reads it as "
+                "an alarm would.",
             )
             return
 
-        due, repeat = timeutil.parse_when(phrase)
+        due, repeat = timeutil.parse_when(phrase, morning=morning)
 
         if due is None:
             ui.add_message("system", f"{phrase!r} -> not a time I can read.")
@@ -440,11 +532,13 @@ def handle_input(text):
         return
 
     if text == "/tooltest":
+        import diagnose
+
         ui.add_message(
             "system",
-            "Running the tool-calling check - sixteen requests, a minute or "
+            "Running the tool-calling check - {} requests, a minute or "
             "two on a local model. Results appear as they finish. "
-            "Nothing is scheduled or remembered.",
+            "Nothing is scheduled or remembered.".format(len(diagnose.PROBES) * 2),
         )
 
         def check():

@@ -208,9 +208,53 @@ def _set_reminder(text, when):
     return "Scheduled: " + reminders.describe(reminders.add(text, due, repeat))
 
 
+# An alarm is the same schedule with a different delivery, so it is the
+# same parser and the same store - but it gets its own tool rather than a
+# `kind` parameter on set_reminder. A boolean flag is a choice the model
+# has to make *after* it has already decided which tool to call, and that
+# is the point at which small models stop reading the description. Two
+# names it can match against the user's own word ("remind me" / "wake me")
+# is a lookup, not a judgement.
+@tool(
+    "set_alarm",
+    "Set a wake-up alarm. Use this instead of set_reminder when the user "
+    "wants waking up or getting out of bed - 'wake me at 7', 'alarm for "
+    "6:30am', 'get me up in the morning'. An alarm rings repeatedly with "
+    "a tone until dismissed; a reminder is said once. Pass the user's own "
+    "timing words through unchanged and never calculate a date yourself.",
+    {
+        "text": {
+            "type": "string",
+            "description": "Why they are getting up, in plain words - "
+                           "'work', 'the gym', or just 'wake up' if they "
+                           "didn't say.",
+        },
+        "when": {
+            "type": "string",
+            "description": "When it should ring, exactly as the user said "
+                           "it. Repeats are fine: 'every weekday at 7:30', "
+                           "'daily at 6'.",
+        },
+    },
+    required=("text", "when"),
+)
+def _set_alarm(text, when):
+    due, repeat = timeutil.parse_when(when, morning=True)
+
+    if due is None:
+        return (
+            f"Couldn't read {when!r} as a time, so no alarm was set. "
+            "Ask the user when they want waking - do not guess a time."
+        )
+
+    return "Alarm set: " + reminders.describe(
+        reminders.add(text, due, repeat, kind="alarm")
+    )
+
+
 @tool(
     "list_reminders",
-    "List the user's pending reminders with their due times.",
+    "List the user's pending reminders and alarms with their due times.",
     {},
 )
 def _list_reminders():
@@ -226,8 +270,8 @@ def _list_reminders():
 
 @tool(
     "cancel_reminder",
-    "Cancel a pending reminder by its number from list_reminders. Call "
-    "list_reminders first to find the number.",
+    "Cancel a pending reminder or alarm by its number from "
+    "list_reminders. Call list_reminders first to find the number.",
     {
         "number": {
             "type": "integer",

@@ -26,6 +26,7 @@ import uuid
 import requests
 from datetime import datetime, timedelta
 
+import config
 import timeutil
 
 from config import (
@@ -151,6 +152,10 @@ def human_delta(seconds):
     return timeutil.relative(datetime.now() + timedelta(seconds=seconds))
 
 
+def is_alarm(reminder):
+    return (reminder or {}).get("kind") == "alarm"
+
+
 def describe(reminder, now=None):
     """'tomorrow 09:00 - take the bins out (in 18 hours)'.
 
@@ -171,8 +176,13 @@ def describe(reminder, now=None):
     repeat = reminder.get("repeat")
     suffix = f" (repeats {timeutil.describe_repeat(repeat)})" if repeat else ""
 
-    return "{} - {} ({}){}".format(
-        timeutil.friendly(due, now), reminder.get("text", "?"),
+    # The word "alarm" goes in the sentence rather than in a symbol or a
+    # bracketed tag, because this string gets spoken as often as printed
+    # and "left square bracket alarm" is not a thing anyone wants to hear.
+    label = "alarm: " if is_alarm(reminder) else ""
+
+    return "{} - {}{} ({}){}".format(
+        timeutil.friendly(due, now), label, reminder.get("text", "?"),
         timeutil.relative(due, now), suffix,
     )
 
@@ -287,7 +297,10 @@ def phrase_from(data):
     return None
 
 
-def add(text, due, repeat):
+def add(text, due, repeat, kind="reminder"):
+    """Schedule something. `kind` decides how it gets delivered, not how
+    it gets scheduled - an alarm is a reminder that wakes you up, so it
+    reuses all of this rather than growing a second scanner."""
     reminder = {
         "id": uuid.uuid4().hex[:8],
         "text": text,
@@ -296,6 +309,9 @@ def add(text, due, repeat):
         "repeat": repeat,
         "attempts": 0,
     }
+
+    if kind != "reminder":
+        reminder["kind"] = kind
 
     with _lock:
         _reminders.append(reminder)
@@ -596,13 +612,69 @@ def _deliver(model, texts, missed=False):
     ui.set_status("Idle")
 
 
+# How late an alarm can be and still be worth ringing. Judged from the
+# due time rather than from "is this the first scan", because starting
+# the app at 07:29 with a 07:30 alarm should still wake you up, and the
+# first scan is exactly when that happens.
+ALARM_GRACE_MINUTES = 10
+
+
+def _deliver_alarm(model, item, stale=False):
+    """Ring, and honour a snooze by putting it back a few minutes."""
+    import alarm
+    import ui
+
+    try:
+        late = (datetime.now()
+                - datetime.fromisoformat(item["due_at"])).total_seconds() / 60
+    except (KeyError, ValueError):
+        late = 0
+
+    if not config.ALARMS_ENABLED:
+        # Not "ignore it" - you still wanted telling, you just didn't
+        # want the room woken up. Falls back to the reminder delivery,
+        # which says it once at the normal volume.
+        _deliver(model, [item.get("text", "wake up")])
+
+        return
+
+    if late > ALARM_GRACE_MINUTES:
+        # It came due while the app was shut. Waking someone at 11am for
+        # a 7am alarm is worse than missing it.
+        ui.add_message(
+            "system",
+            "Alarm \"{}\" was due {} - too late to ring, skipping it.".format(
+                item.get("text", "?"),
+                timeutil.relative(datetime.fromisoformat(item["due_at"])),
+            ),
+        )
+
+        return
+
+    minutes = alarm.ring(model, item)
+
+    if minutes:
+        due = datetime.now() + timedelta(minutes=minutes)
+        add(item.get("text", "wake up"), due, None, kind="alarm")
+
+
 def run_scanner(model):
     import ui
 
     load()
 
     if _reminders:
-        ui.add_message("system", f"Loaded {len(_reminders)} pending reminder(s).")
+        alarms = sum(1 for r in _reminders if is_alarm(r))
+        plain = len(_reminders) - alarms
+        parts = []
+
+        if plain:
+            parts.append(f"{plain} reminder(s)")
+
+        if alarms:
+            parts.append(f"{alarms} alarm(s)")
+
+        ui.add_message("system", "Loaded " + " and ".join(parts) + ".")
 
     first_pass = True
 
@@ -611,12 +683,27 @@ def run_scanner(model):
             due = _due_now()
 
             if due:
-                # Anything already overdue at startup gets delivered as one
-                # message rather than N separate model calls in a row.
-                batch = due if (first_pass and len(due) > 1) else due[:1]
+                # An alarm always goes on its own. Batching it with
+                # reminders would bury the thing that is supposed to be
+                # impossible to ignore inside a list of things that
+                # aren't - and a missed alarm is not worth ringing about
+                # hours later, so an overdue one at startup is retired
+                # rather than fired.
+                alarms = [r for r in due if is_alarm(r)]
+
+                if alarms:
+                    batch = alarms[:1]
+                elif first_pass and len(due) > 1:
+                    batch = due
+                else:
+                    batch = due[:1]
 
                 try:
-                    _deliver(model, [r["text"] for r in batch], missed=first_pass)
+                    if alarms:
+                        _deliver_alarm(model, batch[0])
+                    else:
+                        _deliver(model, [r["text"] for r in batch],
+                                 missed=first_pass)
 
                     for reminder in batch:
                         _retire(reminder, delivered=True)

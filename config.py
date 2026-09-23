@@ -426,6 +426,27 @@ TOOLS_ENABLED = _tools_cfg.get("enabled", True)
 # How many times the model may call tools before it must answer in prose.
 MAX_TOOL_ROUNDS = int(_tools_cfg.get("max_rounds", 4))
 
+# -------------------------
+# Alarms
+# -------------------------
+# An alarm is a reminder that has to actually wake somebody, so it gets
+# its own volume, repeats until dismissed, and plays a tone after the
+# voice. Speech alone doesn't wake anyone - it is exactly the thing a
+# sleeping brain is best at folding into a dream.
+_alarm_cfg = setting("alarms", {})
+ALARMS_ENABLED = bool(_alarm_cfg.get("enabled", True))
+# Independent of tts.volume on purpose: the level you picked for a
+# conversation at midnight is not the level that gets you up at seven.
+ALARM_VOLUME = float(_alarm_cfg.get("volume", 1.0))
+ALARM_REPEATS = int(_alarm_cfg.get("repeats", 5))
+ALARM_GAP_SECONDS = float(_alarm_cfg.get("gap_seconds", 25))
+# Nine, because every alarm clock ever made used nine.
+ALARM_SNOOZE_MINUTES = int(_alarm_cfg.get("snooze_minutes", 9))
+# Empty means the bundled assets/alarm.wav, and if that is missing or
+# unreadable the tone is synthesized instead - an alarm that fails
+# silently is worse than no alarm, because you were relying on it.
+ALARM_TONE = str(_alarm_cfg.get("tone", "")).strip()
+
 _reminders_cfg = setting("reminders", {})
 REMINDERS_ENABLED = _reminders_cfg.get("enabled", True)
 REMINDER_CHECK_INTERVAL_SECONDS = _reminders_cfg.get("check_interval_minutes", 10) * 60
@@ -526,6 +547,13 @@ SETTINGS = {
     "web_search.page_max_chars":  ("PAGE_MAX_CHARS",               True),
 
     "reminders.enabled":          ("REMINDERS_ENABLED",            True),
+
+    "alarms.enabled":             ("ALARMS_ENABLED",               True),
+    "alarms.volume":              ("ALARM_VOLUME",                 True),
+    "alarms.repeats":             ("ALARM_REPEATS",                True),
+    "alarms.gap_seconds":         ("ALARM_GAP_SECONDS",            True),
+    "alarms.snooze_minutes":      ("ALARM_SNOOZE_MINUTES",         True),
+    "alarms.tone":                ("ALARM_TONE",                   True),
 
     "history.max_raw_messages":   ("MAX_RAW_MESSAGES",             True),
     "history.summarize_chunk":    ("SUMMARIZE_CHUNK",              True),

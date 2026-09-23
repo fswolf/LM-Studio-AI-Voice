@@ -581,6 +581,13 @@ _HELP_SECTIONS = [
         ("/cancel N", "cancel reminder N"),
         ("/when ...", "test how a time phrase is read"),
     ]),
+    ("Alarms", [
+        ("/alarm ...", "set one - 7:30am, every weekday at 6"),
+        ("/alarms", "list them"),
+        ("/snooze [n]", "ring again in n minutes"),
+        ("/alarm off", "stop one that's ringing"),
+        ("/alarm test", "hear the tone"),
+    ]),
     ("Session", [
         ("/look", "list windows / test a screenshot"),
         ("/log", "tail the debug log"),

@@ -43,6 +43,10 @@ PROBES = (
     ("turn the music down a bit", "control_audio"),
     ("how much VRAM have I got free?", "system_status"),
     ("what's on my clipboard?", "clipboard"),
+    # set_alarm and set_reminder describe near-identical jobs, so this
+    # probe is really testing the pair: it passes only if "wake me" goes
+    # to the alarm while "remind me" above still goes to the reminder.
+    ("wake me up at 7 tomorrow", "set_alarm"),
 )
 
 INSTRUCTION = (
