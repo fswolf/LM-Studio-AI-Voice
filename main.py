@@ -108,6 +108,12 @@ ui.init(
     voice_server=speech.server_label(),
 )
 
+# The Memory row used to say "Loaded" unconditionally. Now it says which
+# backend is live and what's in it - and asking runs the json->sqlite
+# changeover at startup rather than on the first turn.
+import longterm
+ui.set_memory(longterm.status())
+
 # Seed the on-screen conversation with what was loaded from disk, so
 # past turns are visible right away instead of starting on a blank screen.
 for msg in history.get_messages():
@@ -201,6 +207,61 @@ def handle_input(text):
                 os.environ.get("XDG_SESSION_TYPE", "?"),
             ),
         )
+        return
+
+    if text.startswith("/facts"):
+        import longterm
+
+        argument = text[6:].strip().lower()
+        which = longterm.backend()
+
+        if which == "sqlite":
+            import factstore
+
+            active, retired = factstore.counts()
+
+            if argument == "retired":
+                listing = factstore.rows(retired=True, limit=30)
+                shown = "\n".join(
+                    f"  ~ {fact}  (retired {when[:10]})"
+                    for _i, fact, _s, _c, when in listing
+                ) or "  (none)"
+                ui.add_message(
+                    "system",
+                    f"{retired} retired fact(s) - superseded, kept for "
+                    f"history:\n{shown}",
+                )
+                return
+
+            limit = 500 if argument == "all" else 20
+            listing = factstore.rows(retired=False, limit=limit)
+            shown = "\n".join(
+                f"  - {fact}" + (f"  [{subject}]" if subject else "")
+                for _i, fact, subject, _c, _w in reversed(listing)
+            ) or "  (none yet)"
+            more = (
+                f"\n  ... /facts all shows the rest of the {active}."
+                if argument != "all" and active > limit else ""
+            )
+            ui.add_message(
+                "system",
+                f"Memory backend: sqlite (experimental) - {active} active, "
+                f"{retired} retired. Newest {min(active, limit)}:\n{shown}{more}"
+                "\n/facts retired shows what's been superseded. "
+                "/set long_term_memory.backend json falls back to the old "
+                "handling - nothing is lost either way.",
+            )
+        else:
+            facts = longterm.get_facts()
+            shown = "\n".join(f"  - {f}" for f in facts) or "  (none yet)"
+            ui.add_message(
+                "system",
+                f"Memory backend: json (capped at "
+                f"{config.LONG_TERM_MEMORY_MAX_FACTS}) - {len(facts)} "
+                f"fact(s):\n{shown}\n"
+                "/set long_term_memory.backend sqlite switches to the "
+                "experimental permanent store.",
+            )
         return
 
     if text == "/reminders":
@@ -705,6 +766,10 @@ def handle_input(text):
                 ui.add_message("system", f"Repair failed: {e}")
 
         threading.Thread(target=repair, daemon=True).start()
+        return
+
+    if text == "/scroll":
+        ui.add_message("system", ui.scroll_report())
         return
 
     if text.startswith("/mouse"):

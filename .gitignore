@@ -1,11 +1,15 @@
 __pycache__/
 *.pyc
 
-# Conversation log, the full transcript archive, and scheduled reminders
-# - all personal, all regenerated at runtime.
+# Conversation log, the full transcript archive, scheduled reminders
+# and the long-term fact database - all personal, all regenerated at
+# runtime.
 history/conversation.json
 history/transcript.jsonl
 reminders/reminders.json
+agent/facts.db
+agent/facts.db-wal
+agent/facts.db-shm
 
 # Screenshots and previews dropped here while working
 Claude outputs/
@@ -15,6 +19,9 @@ ai-voice-venv/
 .venv/
 venv/
 server-*/venv/
+server-*/qwentts.cpp/
+server-*/models/
+*.gguf
 
 # Reference voice clips are recordings, not source.
 server-*/voices/*

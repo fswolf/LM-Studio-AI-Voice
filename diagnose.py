@@ -47,6 +47,10 @@ PROBES = (
     # probe is really testing the pair: it passes only if "wake me" goes
     # to the alarm while "remind me" above still goes to the reminder.
     ("wake me up at 7 tomorrow", "set_alarm"),
+    # recall_facts gained an `about` parameter with the sqlite memory
+    # backend - the probe checks the schema change didn't scare the
+    # model off calling it at all.
+    ("what have you remembered about me?", "recall_facts"),
 )
 
 INSTRUCTION = (

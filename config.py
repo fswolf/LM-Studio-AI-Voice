@@ -413,6 +413,12 @@ LONG_TERM_MEMORY_MAX_FACTS = _memory_cfg.get("max_facts", 40)
 # How many facts may go into one system prompt. Under this, all of them
 # do; over it, the ones relevant to what was just said.
 LONG_TERM_MEMORY_CONTEXT_FACTS = _memory_cfg.get("context_facts", 25)
+# "json" is the original capped list in memory.json; "sqlite" is the
+# experimental permanent table (factstore.py) - uncapped, searched with
+# FTS5, and able to retire a fact that stops being true instead of
+# keeping both versions. Live: /set long_term_memory.backend json to
+# fall back, and nothing is lost in either direction.
+LONG_TERM_MEMORY_BACKEND = str(_memory_cfg.get("backend", "json"))
 
 # -------------------------
 # Tool calling
@@ -563,6 +569,7 @@ SETTINGS = {
     "long_term_memory.enabled":   ("LONG_TERM_MEMORY_ENABLED",     True),
     "long_term_memory.max_facts": ("LONG_TERM_MEMORY_MAX_FACTS",   True),
     "long_term_memory.context_facts": ("LONG_TERM_MEMORY_CONTEXT_FACTS", True),
+    "long_term_memory.backend":   ("LONG_TERM_MEMORY_BACKEND",      True),
 }
 
 _TRUE = ("1", "true", "yes", "on", "y")

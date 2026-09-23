@@ -356,7 +356,7 @@ an annoyance.
 | Home *(while she's thinking or talking)* | Cancel the turn |
 | Enter | Send typed message |
 | Tab | Open / close the help panel |
-| PgUp / PgDn | Scroll the conversation |
+| PgUp / PgDn | Scroll the conversation - or the help, when it's open |
 | F2 | Toggle mouse capture — see below |
 | End | Jump back to the newest message |
 | Esc | Quit |
@@ -1340,6 +1340,7 @@ deleting the wrong one.
 ```json
 "long_term_memory": {
     "enabled": true,
+    "backend": "json",
     "max_facts": 30,
     "context_facts": 25
 }
@@ -1349,6 +1350,53 @@ Under `context_facts` every fact goes into every prompt, which is fine at
 thirty. Over it, only the ones sharing vocabulary with what you just said
 travel, plus the newest few regardless — a wall of unrelated trivia is
 exactly what makes a small model start answering questions nobody asked.
+
+## The experimental permanent store
+
+`"backend": "sqlite"` swaps the capped list for a permanent table in
+`agent/facts.db` — plain SQLite, in-process, no server, nothing to
+install. What changes:
+
+* **Nothing is ever dropped for space.** The JSON backend deletes the
+  oldest fact once it passes `max_facts`; the table has no cap. Facts
+  that stop being true are *retired* — kept with their dates, hidden
+  from context, visible under `/facts retired`, so a wrong retirement
+  is recoverable and "what was my last graphics card" is answerable.
+* **Search is FTS5** — stemmed and term-weighted instead of raw word
+  overlap, and milliseconds at thousands of facts.
+* **Contradictions get handled.** The extractor can answer `REPLACE` as
+  well as `NEW`, so "I got a 7900 XTX" retires the 6950 XT fact instead
+  of sitting next to it forever. When both could be true at once it
+  keeps both, and a garbled reply degrades to keeping both — never to
+  losing a fact.
+* **`recall_facts` takes a query.** She can look something up instead of
+  reading the whole table into context.
+
+`/facts` shows what's stored and which backend is live, and
+`memory-manager/` is the editor:
+
+```bash
+python memory-manager/manager.py
+```
+
+opens a local page (127.0.0.1:8790, and only 127.0.0.1) to view,
+search, add, edit, retire, restore and delete facts, plus edit the
+`user_preferences` block of `memory.json` - whichever backend is
+active. On sqlite it's safe to use while she's running; on json the
+page warns you that a running assistant can overwrite your edits when
+it next saves. The switch is
+live in both directions and loses nothing:
+
+```
+/set long_term_memory.backend sqlite    json facts are absorbed into the table
+/set long_term_memory.backend json      newest max_facts are written back to
+                                        memory.json; the rest wait in the db
+```
+
+The db is always the superset and the JSON file is always the limited
+view, which is what makes the setting safe to flip the day it misbehaves.
+If this python's sqlite lacks FTS5 the setting quietly stays on json and
+the log says why.
 
 ## Conversation history
 

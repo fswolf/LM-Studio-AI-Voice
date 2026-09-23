@@ -31,6 +31,7 @@ from prompt_toolkit.layout import (
 )
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
+from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import TextArea
@@ -65,6 +66,8 @@ _on_hotkey = None
 _conv_window = None
 _scrollback = 0  # lines scrolled up from the bottom; 0 = pinned to latest
 _help_visible = False
+_help_scroll = 0  # lines scrolled down from the top of the help text
+_help_window = None
 
 # Mouse capture is off by default, and that is a deliberate trade.
 # prompt_toolkit's mouse support gives you wheel scrolling, but it turns
@@ -250,6 +253,16 @@ def set_model(label: str):
     """Update the Model row - it now shows health, not just a name."""
     with _lock:
         state["model"] = label
+    _refresh()
+
+
+def set_memory(text: str):
+    """The Memory row: which backend, how many facts. longterm.status()
+    writes it whenever the table changes, so it's never a stale label."""
+    with _lock:
+        if state["memory"] == text:
+            return
+        state["memory"] = text
     _refresh()
 
 
@@ -513,6 +526,12 @@ def _conversation_cursor():
     return Point(x=0, y=_desired_top())
 
 
+# Counters for /scroll, so "the wheel doesn't work" can be split into
+# "the terminal never sent it" and "it arrived and nothing moved".
+_events = {"conv_wheel": 0, "help_wheel": 0, "other_mouse": 0,
+           "page_keys": 0, "arrow_keys": 0}
+
+
 class _ConversationControl(FormattedTextControl):
     """The conversation pane, with a wheel that actually scrolls it.
 
@@ -528,14 +547,95 @@ class _ConversationControl(FormattedTextControl):
 
     def mouse_handler(self, mouse_event):
         if mouse_event.event_type == MouseEventType.SCROLL_UP:
+            _events["conv_wheel"] += 1
             _scroll_by(WHEEL_LINES)
             return None
 
         if mouse_event.event_type == MouseEventType.SCROLL_DOWN:
+            _events["conv_wheel"] += 1
             _scroll_by(-WHEEL_LINES)
             return None
 
+        _events["other_mouse"] += 1
+
         return super().mouse_handler(mouse_event)
+
+
+# ---------------------------------------------------------------------------
+# Scrolling the help window
+#
+# Same machinery as the conversation, measured from the other end: the
+# conversation counts back from the newest line because that is where
+# you live, help counts down from the top because it's a document. Both
+# route the wheel through their own counter for the reason documented on
+# _ConversationControl - Window's own wheel handling is overwritten by
+# get_vertical_scroll on every render.
+# ---------------------------------------------------------------------------
+def _help_line_count():
+    return sum(text.count("\n") for _style, text in _help_fragments())
+
+
+def _help_height():
+    if _help_window is not None and _help_window.render_info is not None:
+        return max(1, _help_window.render_info.window_height)
+
+    return 10
+
+
+def _help_scroll_by(lines):
+    """Positive is further down the page."""
+    global _help_scroll
+
+    _help_scroll = max(0, min(
+        _help_scroll + lines,
+        max(0, _help_line_count() - _help_height()),
+    ))
+    _refresh()
+
+
+def _help_scroll_position(window):
+    return _help_scroll
+
+
+def _help_cursor():
+    return Point(x=0, y=_help_scroll)
+
+
+class _HelpControl(FormattedTextControl):
+    def mouse_handler(self, mouse_event):
+        if mouse_event.event_type == MouseEventType.SCROLL_UP:
+            _events["help_wheel"] += 1
+            _help_scroll_by(-WHEEL_LINES)
+            return None
+
+        if mouse_event.event_type == MouseEventType.SCROLL_DOWN:
+            _events["help_wheel"] += 1
+            _help_scroll_by(WHEEL_LINES)
+            return None
+
+        _events["other_mouse"] += 1
+
+        return super().mouse_handler(mouse_event)
+
+
+def scroll_report():
+    """Everything /scroll needs to say where the wheel is getting lost."""
+    import os
+    import prompt_toolkit
+
+    conv_lines = len(_conversation_lines())
+
+    return (
+        f"prompt_toolkit {prompt_toolkit.__version__} | TERM={os.environ.get('TERM', '?')} "
+        f"| mouse capture: {'ON' if _mouse else 'OFF (F2)'}\n"
+        f"conversation: {conv_lines} lines, pane {_window_height()} tall, "
+        f"scrollback {_scrollback} (max {max(0, conv_lines - _window_height())})\n"
+        f"help: {_help_line_count()} lines, pane {_help_height()} tall, "
+        f"scroll {_help_scroll}, visible={_help_visible}\n"
+        f"events since start: conversation wheel {_events['conv_wheel']}, "
+        f"help wheel {_events['help_wheel']}, other mouse {_events['other_mouse']}, "
+        f"PgUp/PgDn {_events['page_keys']}, arrows {_events['arrow_keys']}"
+    )
 
 
 def _keyed(text, label_style="class:footer"):
@@ -560,46 +660,100 @@ _HOME_BY_MODE = {
     "open": "turn hands-free listening on or off",
 }
 
+# A row is (command, description); a bare string renders as a dim note
+# line, which is how sections get sentences instead of staying terse.
 _HELP_SECTIONS = [
+    ("Just say it", [
+        "Most of what she can do has no command - asking is the command.",
+        "These all trigger real tool calls:",
+        "",
+        '  "remind me in 20 minutes to stretch"',
+        '  "wake me up at 7:30" - or "every weekday at 6"',
+        '  "remember that I stream on tuesdays"',
+        '  "what do you remember about my gpu?"',
+        '  "search for the LM Studio 0.4 changelog"',
+        '  "what time is it?" / "how long until friday?"',
+        '  "turn the music down" / "what\'s on my clipboard?"',
+        '  "how much vram have I got free?"',
+        '  "what\'s on my screen?" - needs vision on and a vision model',
+    ]),
     ("Keys", [
         ("(HOME)", None),  # filled in from the current mode
         ("(Enter)", "send message"),
-        ("(PgUp/PgDn)", "scroll the conversation - or the wheel, with F2 on"),
+        ("(PgUp/PgDn)", "scroll the pane - conversation or this help"),
+        ("(wheel)", "same - arrow keys too"),
         ("(F2)", "mouse capture: wheel scroll vs selecting text"),
-        ("(End)", "jump back to newest"),
+        ("(End)", "back to newest / top of help"),
         ("(Tab)", "close this window"),
         ("(ESC)", "quit"),
     ]),
-    ("Voice", [
-        ("/mode", "auto | manual | open"),
-        ("/mic", "levels from the last recording"),
-        ("/barge", "talk-over-her diagnostics"),
-        ("/wake", "wake word status and scores"),
+    ("Voice modes", [
+        ("/mode", None),  # gets the (now: ...) suffix
+        "auto:   HOME arms the mic, silence ends the turn",
+        "manual: HOME starts recording, HOME again stops it",
+        "open:   hands-free - she listens continuously",
+        "",
+        ("/mic", "levels from the last recording - is she hearing you?"),
+        ("/barge", "talk-over-her diagnostics, with the thresholds"),
+        ("/wake", "wake word status and live scores (openwakeword)"),
+    ]),
+    ("Her voice", [
+        ("/voice", "list what the TTS server offers, current first"),
+        ("/voice bella", "switch - partial names match, saved to config"),
+        ("/voice luna", "blends work too, if the server defines them"),
+        "pitch is a setting, not a voice: /set tts.pitch 3 reads",
+        "younger, -3 older, and it applies to the next sentence.",
     ]),
     ("Reminders", [
-        ("/reminders", "list what's scheduled"),
-        ("/cancel N", "cancel reminder N"),
-        ("/when ...", "test how a time phrase is read"),
+        ("/reminders", "list what's scheduled, numbered, with countdowns"),
+        ("/cancel N", "cancel by number - alarms live in the same list"),
+        ("/when ...", "dry-run the time parser, schedules nothing"),
+        "repeats all work: \"every monday at 9\", \"daily at 7:30\",",
+        "\"every 30 minutes\", \"weekdays at 8\". Said or typed.",
     ]),
     ("Alarms", [
-        ("/alarm ...", "set one - 7:30am, every weekday at 6"),
-        ("/alarms", "list them"),
-        ("/snooze [n]", "ring again in n minutes"),
-        ("/alarm off", "stop one that's ringing"),
-        ("/alarm test", "hear the tone"),
+        ("/alarm 7:30am", "set one - any time phrase works"),
+        ("/alarm every weekday at 6", ""),
+        ("/alarms", "list them (cancel with /cancel)"),
+        ("/snooze [n]", "ring again in n minutes - bare /snooze uses the default"),
+        ("/alarm off", "stop one that's ringing - talking over it also works"),
+        ("/alarm test", "hear the tone at alarm volume"),
+        ("/when alarm 6", "how an alarm reads a time - bare hours mean morning"),
+        "she speaks a line written for the alarm, plays the tone, and",
+        "repeats until dismissed - louder and less charming each round.",
+        "one due while the app was closed is skipped, not rung at noon.",
+    ]),
+    ("Memory", [
+        ("/facts", "what she remembers, and which backend holds it"),
+        ("/facts all", "the whole table, not just the newest"),
+        ("/facts retired", "superseded facts - kept, hidden from her"),
+        "json backend: the original capped list in memory.json.",
+        "sqlite backend (experimental): permanent, searched, and a new",
+        "fact can retire the old one it contradicts. Switch live with",
+        "/set long_term_memory.backend sqlite|json - loses nothing.",
+        "memory-manager/start.sh opens the editor in your browser.",
+    ]),
+    ("Tools", [
+        ("/tools", "what the model can call - and what's off, and why"),
+        ("/tooltest", "canned requests, two ways each: does this model"),
+        "                actually pick the right tool? Run it after changing models.",
+        ("/repair", "rewrite old keyword-rescued reminders as the tool"),
+        "                calls they should have been - teaches by example.",
+    ]),
+    ("Plugins", [
+        ("/plugins", "list add-ons and whether each is running"),
+        ("/pomf on", "stream chat - /<name> on|off|status for any plugin"),
+        "chat-triggered turns get a restricted tool set and never",
+        "touch conversation history.",
     ]),
     ("Session", [
-        ("/look", "list windows / test a screenshot"),
-        ("/log", "tail the debug log"),
+        ("/look", "list windows, or test a screenshot"),
+        ("/log", "tail the debug log without leaving the app"),
         ("/mouse", "same as F2, and saves the choice"),
-        ("/set", "list or change any setting, saved"),
-        ("/voice", "list voices, or switch - blends too"),
-        ("/tools", "which tools the model can call"),
-        ("/tooltest", "does this model actually call them?"),
-        ("/plugins", "add-ons, and /<name> on|off for each"),
-        ("/repair", "record past reminders as the calls they were"),
+        ("/set", "alone lists every setting with its value; /set a.b x"),
+        "                changes one, saved to config.json, most apply live.",
         ("/keys", "hotkey + socket diagnostics"),
-        ("/clear", "wipe conversation and saved history"),
+        ("/clear", "wipe conversation and saved history - not memory"),
         ("/quit", "exit"),
     ]),
 ]
@@ -612,15 +766,28 @@ def _help_fragments():
     for section, rows in _HELP_SECTIONS:
         fragments.append(("class:label bold", f" {section}\n"))
 
-        for key, description in rows:
+        for entry in rows:
+            # A bare string is a note line - dim, indented, no column.
+            if isinstance(entry, str):
+                fragments.append(
+                    ("class:footer", f"   {entry}\n" if entry else "\n")
+                )
+                continue
+
+            key, description = entry
+
             if key == "(HOME)":
                 description = _HOME_BY_MODE.get(mode, _HOME_BY_MODE["auto"])
             elif key == "/mode":
-                description = f"{description}   (now: {mode})"
+                description = f"auto | manual | open   (now: {mode})"
 
             style = "class:key" if key.startswith("(") else "class:agent"
-            fragments.append((style, f"   {key:<13}"))
-            fragments.append(("class:text", f"{description} \n"))
+            # Pad to the column, but never glue a long command straight
+            # onto its description.
+            fragments.append((style, f"   {key:<15}"))
+            fragments.append(
+                ("class:text", f" {description}\n" if description else "\n")
+            )
 
         fragments.append(("", "\n"))
 
@@ -709,6 +876,10 @@ def _build_style():
         "dim": THEME["dim"],
         "prompt": f"{THEME['prompt']} bold",
         "link": f"{THEME['link']} underline",
+        # The help scrollbar: track in the theme's dim, thumb in the
+        # border purple, so it reads as part of the frame.
+        "scrollbar.background": f"bg:{THEME['dim']}",
+        "scrollbar.button": f"bg:{THEME['border']}",
     })
 
 
@@ -740,8 +911,12 @@ def _build_keys():
 
     @keys.add("tab")
     def _(event):
-        global _help_visible
+        global _help_visible, _help_scroll
         _help_visible = not _help_visible
+
+        if _help_visible:
+            _help_scroll = 0  # always open at the top
+
         _refresh()
 
     @keys.add("escape", eager=True)
@@ -766,17 +941,60 @@ def _build_keys():
     def _(event):
         # A page, not a few lines: the view only moves once the cursor
         # leaves the viewport, so nudging it 5 lines looks like nothing
-        # happened.
-        _scroll_by(_page_size())
+        # happened. The keys drive whichever pane is showing.
+        _events["page_keys"] += 1
+
+        if _help_visible:
+            _help_scroll_by(-max(1, _help_height() - 2))
+        else:
+            _scroll_by(_page_size())
 
     @keys.add("pagedown")
     def _(event):
-        _scroll_by(-_page_size())
+        _events["page_keys"] += 1
+
+        if _help_visible:
+            _help_scroll_by(max(1, _help_height() - 2))
+        else:
+            _scroll_by(-_page_size())
+
+    # With mouse capture off, terminals don't drop wheel events on the
+    # floor - in a full-screen app they translate each notch into a few
+    # Up/Down arrow presses ("alternate scroll" mode). Those landed in
+    # the input box, which read them as "recall the last thing I typed".
+    # Routing the arrows to the visible pane means the wheel scrolls
+    # with capture OFF as well as on, which is the better default: you
+    # keep text selection and get the wheel for free. One line per key
+    # because a notch is already several keys.
+    @keys.add("up")
+    def _(event):
+        _events["arrow_keys"] += 1
+
+        if _help_visible:
+            _help_scroll_by(-1)
+        else:
+            _scroll_by(1)
+
+    @keys.add("down")
+    def _(event):
+        _events["arrow_keys"] += 1
+
+        if _help_visible:
+            _help_scroll_by(1)
+        else:
+            _scroll_by(-1)
 
     @keys.add("end")
     def _(event):
-        global _scrollback
-        _scrollback = 0
+        # Back to the resting position of whichever pane is showing:
+        # the top of the help, the newest line of the conversation.
+        global _scrollback, _help_scroll
+
+        if _help_visible:
+            _help_scroll = 0
+        else:
+            _scrollback = 0
+
         _refresh()
 
     return keys
@@ -788,7 +1006,7 @@ def run(on_submit, on_hotkey=None):
     on_submit(text) is called on the UI thread - it must not block, so
     anything slow belongs on a worker thread.
     """
-    global _app, _on_submit, _on_hotkey, _conv_window
+    global _app, _on_submit, _on_hotkey, _conv_window, _help_window
 
     _on_submit = on_submit
     _on_hotkey = on_hotkey
@@ -827,7 +1045,22 @@ def run(on_submit, on_hotkey=None):
 
     _conv_window = conversation_window
 
-    help_window = Window(content=FormattedTextControl(_help_fragments))
+    # Same shape as the conversation window, plus a scrollbar - the help
+    # outgrew one screen the day alarms landed, and a pane that cuts off
+    # silently reads as "that's all there is".
+    help_window = Window(
+        content=_HelpControl(
+            _help_fragments,
+            get_cursor_position=_help_cursor,
+        ),
+        height=Dimension(min=3, weight=1),
+        wrap_lines=False,
+        get_vertical_scroll=_help_scroll_position,
+        always_hide_cursor=True,
+        right_margins=[ScrollbarMargin()],
+    )
+
+    _help_window = help_window
 
     # Help replaces the conversation panel rather than floating over it.
     # A float has to be full width anyway - a 2-cell emoji whose first

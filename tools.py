@@ -313,15 +313,37 @@ def _remember_fact(fact):
     return "Not saved - too long, too short, or already known."
 
 
+# `about` arrived with the sqlite backend. Without it this tool was a
+# SELECT * - fine at thirty facts, a context bomb at three thousand.
+# It stays optional so "what do you know about me" still works, but a
+# bare call now returns the newest slice rather than everything.
 @tool(
     "recall_facts",
-    "List what has been remembered about the user so far.",
-    {},
+    "Search what has been remembered about the user. Pass `about` to "
+    "look something up ('his gpu', 'streaming'); omit it for the most "
+    "recently learned facts.",
+    {
+        "about": {
+            "type": "string",
+            "description": "What to look for, in plain words. Optional.",
+        },
+    },
 )
-def _recall_facts():
-    facts = longterm.get_facts()
+def _recall_facts(about=""):
+    about = str(about or "").strip()
 
-    return "\n".join(f"- {f}" for f in facts) if facts else "Nothing saved yet."
+    if about:
+        facts = longterm.relevant_facts(about, limit=10)
+
+        if not facts:
+            return f"Nothing remembered about {about!r}."
+    else:
+        facts = longterm.get_facts()[-15:]
+
+        if not facts:
+            return "Nothing saved yet."
+
+    return "\n".join(f"- {f}" for f in facts)
 
 
 @tool(
