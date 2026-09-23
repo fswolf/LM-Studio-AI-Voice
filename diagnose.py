@@ -51,6 +51,10 @@ PROBES = (
     # backend - the probe checks the schema change didn't scare the
     # model off calling it at all.
     ("what have you remembered about me?", "recall_facts"),
+    # The file tools: "write me a script" has to land on write_file, not
+    # on a chat reply containing the script - the most common failure.
+    ("write a bash script to ~/scripts/hello.sh that prints hello", "write_file"),
+    ("what's in my Downloads folder?", "list_files"),
 )
 
 INSTRUCTION = (

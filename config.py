@@ -322,6 +322,14 @@ VISION_MAX_BYTES = int(_vision_cfg.get("max_kb", 4096)) * 1024
 #   "desktop": { "enabled": true, "clipboard": true }
 _desktop_cfg = setting("desktop", {})
 DESKTOP_ENABLED = bool(_desktop_cfg.get("enabled", True))
+
+# Her hands on your files: list_files/read_file are free under ~, minus
+# a deny list; write_file/edit_file pop an approval window in the TUI
+# and wait. No answer within approval_timeout seconds is a no.
+#   "files": { "enabled": true, "approval_timeout": 120 }
+_files_cfg = setting("files", {})
+FILES_ENABLED = bool(_files_cfg.get("enabled", True))
+FILES_APPROVAL_TIMEOUT = float(_files_cfg.get("approval_timeout", 120))
 # Separate from the rest, because reading the clipboard means whatever
 # you last copied - a password, an API key - can land in the model's
 # context and from there in history on disk. On by default, but it is
@@ -525,6 +533,9 @@ SETTINGS = {
 
     "desktop.enabled":            ("DESKTOP_ENABLED",              True),
     "desktop.clipboard":          ("DESKTOP_CLIPBOARD",            True),
+
+    "files.enabled":              ("FILES_ENABLED",                True),
+    "files.approval_timeout":     ("FILES_APPROVAL_TIMEOUT",       True),
 
     # Shared by every chat plugin. A plugin's own keys - channels,
     # account ids - are edited in config.json; these are the ones worth

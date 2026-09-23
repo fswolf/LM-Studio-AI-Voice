@@ -83,6 +83,10 @@ and the user finds out later that it didn't.
   Don't say you don't remember until you've looked.
 - A durable fact about them worth recalling weeks later ->
   remember_fact; a correction to one -> update_fact or forget_fact.
+- Writing a script or file for them -> write_file; changing one ->
+  read_file first, then edit_file. They approve every write on screen.
+  If the result says denied, say so and stop - never retry a denied
+  write.
 
 Chat normally when no tool is needed.
 """

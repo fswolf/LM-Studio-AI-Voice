@@ -17,13 +17,17 @@ calls ui.run(on_submit=...) once and the app owns the main thread.
 """
 import re
 import threading
+import time
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.filters import Condition
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import (
     ConditionalContainer,
+    Float,
+    FloatContainer,
     HSplit,
     Layout,
     VSplit,
@@ -36,6 +40,7 @@ from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import TextArea
 
+import logbook
 from config import THEME
 
 try:
@@ -68,6 +73,10 @@ _scrollback = 0  # lines scrolled up from the bottom; 0 = pinned to latest
 _help_visible = False
 _help_scroll = 0  # lines scrolled down from the top of the help text
 _help_window = None
+_approval = None  # the pending permission request, or None
+_approval_scroll = 0
+_approval_window = None
+_approval_lock = threading.Lock()  # one question at a time
 
 # Mouse capture is off by default, and that is a deliberate trade.
 # prompt_toolkit's mouse support gives you wheel scrolling, but it turns
@@ -638,6 +647,188 @@ def scroll_report():
     )
 
 
+# ---------------------------------------------------------------------------
+# Permission popups
+#
+# A tool that wants to write a file calls ask_approval() from the worker
+# thread and blocks. The TUI floats a box over the conversation with the
+# path, what's about to happen, and the content or diff; Y or N on the
+# keyboard answers it; no answer before the timeout is a no. It's the one
+# place the model's turn waits on you rather than the other way round -
+# and the reason it can be trusted with a write tool at all.
+# ---------------------------------------------------------------------------
+def ask_approval(title, body, note="", timeout=120):
+    """Show the request and wait. Returns True only on an explicit yes.
+
+    Safe to call from any thread. Headless (no app running) is a no:
+    nothing gets written on the strength of a question nobody saw.
+    """
+    global _approval, _approval_scroll
+
+    if _app is None:
+        return False
+
+    with _approval_lock:
+        answered = threading.Event()
+        request = {
+            "title": title,
+            "note": note,
+            "body": [str(line) for line in body],
+            "answer": None,
+            "event": answered,
+            "deadline": time.monotonic() + max(5, float(timeout)),
+        }
+
+        with _lock:
+            _approval = request
+            _approval_scroll = 0
+            previous_status = state["status"]
+            state["status"] = "Waiting for you"
+
+        _refresh()
+
+        # A ticker so the countdown in the title moves without keypresses.
+        def tick():
+            while not answered.is_set():
+                _refresh()
+                answered.wait(1.0)
+
+        threading.Thread(target=tick, daemon=True).start()
+        answered.wait(max(5, float(timeout)))
+
+        with _lock:
+            answer = request["answer"]
+            _approval = None
+            state["status"] = previous_status
+
+        if answer is None:
+            logbook.warn("ui", "approval timed out: %s", title)
+
+        _refresh()
+
+        return answer is True
+
+
+def approving():
+    return _approval is not None
+
+
+def _answer_approval(yes):
+    with _lock:
+        request = _approval
+
+    if request is None:
+        return
+
+    request["answer"] = bool(yes)
+    request["event"].set()
+
+
+def _approval_title():
+    request = _approval
+
+    if request is None:
+        return "Permission"
+
+    left = max(0, int(request["deadline"] - time.monotonic()))
+
+    return f"Permission - Y to allow, N to deny - {left}s"
+
+
+def _approval_header():
+    request = _approval
+
+    if request is None:
+        return []
+
+    fragments = [("class:approval.title", f" {request['title']}\n")]
+
+    if request["note"]:
+        fragments.append(("class:footer", f" {request['note']}\n"))
+
+    return fragments
+
+
+def _approval_body():
+    """The content or diff, coloured the way a diff reads."""
+    request = _approval
+
+    if request is None:
+        return []
+
+    fragments = []
+
+    for line in request["body"]:
+        if line.startswith(("+++", "---")):
+            style = "class:footer"
+        elif line.startswith("@@"):
+            style = "class:diff.hunk"
+        elif line.startswith("+"):
+            style = "class:diff.add"
+        elif line.startswith("-"):
+            style = "class:diff.del"
+        else:
+            style = "class:text"
+
+        fragments.append((style, f" {line}\n"))
+
+    return fragments or [("class:footer", " (nothing to show)\n")]
+
+
+def _approval_lines():
+    return len(_approval["body"]) if _approval else 0
+
+
+def _approval_height():
+    if _approval_window is not None and _approval_window.render_info is not None:
+        return max(1, _approval_window.render_info.window_height)
+
+    return 10
+
+
+def _approval_scroll_by(lines):
+    global _approval_scroll
+
+    _approval_scroll = max(0, min(
+        _approval_scroll + lines,
+        max(0, _approval_lines() - _approval_height()),
+    ))
+    _refresh()
+
+
+def _approval_scroll_position(window):
+    return _approval_scroll
+
+
+def _approval_cursor():
+    return Point(x=0, y=_approval_scroll)
+
+
+class _ApprovalControl(FormattedTextControl):
+    def mouse_handler(self, mouse_event):
+        if mouse_event.event_type == MouseEventType.SCROLL_UP:
+            _approval_scroll_by(-WHEEL_LINES)
+            return None
+
+        if mouse_event.event_type == MouseEventType.SCROLL_DOWN:
+            _approval_scroll_by(WHEEL_LINES)
+            return None
+
+        return super().mouse_handler(mouse_event)
+
+
+def _approval_size():
+    """(width, height) for the float: most of the screen, not all of
+    it, so it reads as a window over the conversation."""
+    try:
+        size = _app.output.get_size()
+        columns, rows = size.columns, size.rows
+    except Exception:
+        columns, rows = 100, 30
+
+    return max(40, int(columns * 0.8)), max(10, int(rows * 0.7))
+
+
 def _keyed(text, label_style="class:footer"):
     """Colour the (key) parts like sfav does, leave the labels muted."""
     fragments = []
@@ -676,6 +867,8 @@ _HELP_SECTIONS = [
         '  "turn the music down" / "what\'s on my clipboard?"',
         '  "how much vram have I got free?"',
         '  "what\'s on my screen?" - needs vision on and a vision model',
+        '  "write me a bash script in ~/scripts that backs up my configs"',
+        '  "open ~/notes.txt and fix the typo in the second line"',
     ]),
     ("Keys", [
         ("(HOME)", None),  # filled in from the current mode
@@ -739,6 +932,14 @@ _HELP_SECTIONS = [
         "                actually pick the right tool? Run it after changing models.",
         ("/repair", "rewrite old keyword-rescued reminders as the tool"),
         "                calls they should have been - teaches by example.",
+    ]),
+    ("Files", [
+        "she can list and read anything under ~ (minus keys, credentials",
+        "and shell startup files), and write or edit with your say-so:",
+        "every write pops a permission window with the content or the",
+        "diff. Y or Enter allows, N or Esc denies, PgUp/PgDn scrolls.",
+        "No answer in files.approval_timeout seconds is a no.",
+        "/set files.enabled false turns the whole thing off.",
     ]),
     ("Plugins", [
         ("/plugins", "list add-ons and whether each is running"),
@@ -880,6 +1081,12 @@ def _build_style():
         # border purple, so it reads as part of the frame.
         "scrollbar.background": f"bg:{THEME['dim']}",
         "scrollbar.button": f"bg:{THEME['border']}",
+        # The permission popup: title in the warning colour so it can't
+        # be mistaken for a chat message, diff lines the way diffs read.
+        "approval.title": f"{THEME['warn']} bold",
+        "diff.add": THEME["ok"],
+        "diff.del": THEME["warn"],
+        "diff.hunk": THEME["dim"],
     })
 
 
@@ -909,9 +1116,35 @@ def _build_keys():
             "scroll; F2 to get the wheel back.",
         )
 
+    # While a permission popup is up, the keyboard belongs to it. Y/N
+    # (and Enter/Esc) answer; the scroll keys scroll it; everything else
+    # is swallowed so a half-typed message can't leak into the input
+    # box while you're reading a diff. Exact keys beat Keys.Any in
+    # prompt_toolkit, so the swallow doesn't eat the answers.
+    asking = Condition(approving)
+
+    @keys.add("y", filter=asking)
+    @keys.add("Y", filter=asking)
+    @keys.add("enter", filter=asking)
+    def _(event):
+        _answer_approval(True)
+
+    @keys.add("n", filter=asking)
+    @keys.add("N", filter=asking)
+    def _(event):
+        _answer_approval(False)
+
+    @keys.add(Keys.Any, filter=asking)
+    def _(event):
+        pass
+
     @keys.add("tab")
     def _(event):
         global _help_visible, _help_scroll
+
+        if approving():
+            return
+
         _help_visible = not _help_visible
 
         if _help_visible:
@@ -921,9 +1154,13 @@ def _build_keys():
 
     @keys.add("escape", eager=True)
     def _(event):
-        # Esc closes the help window if it's open, quits otherwise -
-        # same as sfav's notes popup.
+        # Esc answers a permission popup with no, closes the help window
+        # if it's open, quits otherwise - same as sfav's notes popup.
         global _help_visible
+
+        if approving():
+            _answer_approval(False)
+            return
 
         if _help_visible:
             _help_visible = False
@@ -944,7 +1181,9 @@ def _build_keys():
         # happened. The keys drive whichever pane is showing.
         _events["page_keys"] += 1
 
-        if _help_visible:
+        if approving():
+            _approval_scroll_by(-max(1, _approval_height() - 2))
+        elif _help_visible:
             _help_scroll_by(-max(1, _help_height() - 2))
         else:
             _scroll_by(_page_size())
@@ -953,7 +1192,9 @@ def _build_keys():
     def _(event):
         _events["page_keys"] += 1
 
-        if _help_visible:
+        if approving():
+            _approval_scroll_by(max(1, _approval_height() - 2))
+        elif _help_visible:
             _help_scroll_by(max(1, _help_height() - 2))
         else:
             _scroll_by(-_page_size())
@@ -970,7 +1211,9 @@ def _build_keys():
     def _(event):
         _events["arrow_keys"] += 1
 
-        if _help_visible:
+        if approving():
+            _approval_scroll_by(-1)
+        elif _help_visible:
             _help_scroll_by(-1)
         else:
             _scroll_by(1)
@@ -979,7 +1222,9 @@ def _build_keys():
     def _(event):
         _events["arrow_keys"] += 1
 
-        if _help_visible:
+        if approving():
+            _approval_scroll_by(1)
+        elif _help_visible:
             _help_scroll_by(1)
         else:
             _scroll_by(-1)
@@ -1007,6 +1252,7 @@ def run(on_submit, on_hotkey=None):
     anything slow belongs on a worker thread.
     """
     global _app, _on_submit, _on_hotkey, _conv_window, _help_window
+    global _approval_window
 
     _on_submit = on_submit
     _on_hotkey = on_hotkey
@@ -1089,7 +1335,56 @@ def run(on_submit, on_hotkey=None):
         _framed(input_area, title="tab for help"),
     ])
 
-    layout = Layout(body, focused_element=input_area)
+    # The permission popup floats over everything, centred, most of the
+    # screen but not all of it. Its body scrolls the same way the other
+    # panes do.
+    approval_body = Window(
+        content=_ApprovalControl(
+            _approval_body,
+            get_cursor_position=_approval_cursor,
+        ),
+        wrap_lines=False,
+        get_vertical_scroll=_approval_scroll_position,
+        always_hide_cursor=True,
+        right_margins=[ScrollbarMargin()],
+    )
+    _approval_window = approval_body
+
+    approval_box = ConditionalContainer(
+        _framed(
+            HSplit([
+                Window(
+                    content=FormattedTextControl(_approval_header),
+                    height=Dimension(min=1, max=3),
+                    dont_extend_height=True,
+                ),
+                _rule(_HORIZONTAL),
+                approval_body,
+                _rule(_HORIZONTAL),
+                Window(
+                    content=FormattedTextControl(lambda: _keyed(
+                        " (Y) allow  (N) deny  (PgUp/PgDn) scroll  (Esc) deny"
+                    )),
+                    height=1,
+                ),
+            ]),
+            title=_approval_title,
+        ),
+        filter=Condition(approving),
+    )
+
+    root = FloatContainer(
+        content=body,
+        floats=[
+            Float(
+                content=approval_box,
+                width=lambda: _approval_size()[0],
+                height=lambda: _approval_size()[1],
+            ),
+        ],
+    )
+
+    layout = Layout(root, focused_element=input_area)
 
     _app = Application(
         layout=layout,

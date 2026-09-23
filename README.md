@@ -11,6 +11,9 @@ A local AI voice assistant powered by:
 - ⚡ Streaming replies — she starts talking a sentence in, not at the end
 - ✋ Barge-in — talk over her and she stops
 - 👀 Optional vision — she can look at your screen
+- ⏰ Reminders and real alarms — she wakes you up, and nags until you're up
+- 📝 Writes and edits your files — every change shown in a permission popup first
+- 📚 Long-term memory — optional permanent SQLite store with its own browser editor
 - 🔌 Plugins — stream chat and anything else you bolt on
 - 💬 Full-screen terminal interface
 
@@ -299,6 +302,7 @@ you can't turn a dial that isn't there.
     "tts":        { ... },
     "vision":     { ... },
     "desktop":    { ... },
+    "files":      { ... },
     "plugins":    { ... },
     "wake_word":  { ... },
     "tools":      { ... },
@@ -678,6 +682,8 @@ check the time, then schedule something.
 | `clipboard` | Read what you copied, or put something there to paste |
 | `focus_window` | Switch to a window, named the way you'd name it |
 | `system_status` | Free VRAM, GPU temp and load, RAM, disk, loaded model |
+| `list_files` / `read_file` | Look around and read, anywhere under `~` minus the deny list |
+| `write_file` / `edit_file` | Create or change a file — **you approve each one on screen** |
 | `read_page` | Open a link and read it, not just the search snippet |
 | `search_history` | Look through past conversations for something |
 | `web_search` | DuckDuckGo, for anything it can't know |
@@ -1319,6 +1325,71 @@ the two ways this fails and they look identical from the outside.
 
 ---
 
+# Files
+
+```
+> "Write me a bash script in ~/scripts that backs up my dotfiles."
+> "What's in my Downloads folder?"
+> "Open ~/notes/todo.md and move the first item to the bottom."
+```
+
+She can look around and read anything under your home, and she can
+write — but only through you. Every `write_file` or `edit_file` call
+stops and pops a permission window over the conversation:
+
+```
+╭─ Permission - Y to allow, N to deny - 112s ────────────────────────╮
+│ create ~/scripts/backup.sh                                          │
+│ 14 lines, creates folder ~/scripts/, marked executable              │
+│─────────────────────────────────────────────────────────────────────│
+│ #!/usr/bin/env bash                                                 │
+│ set -euo pipefail                                                   │
+│ ...                                                                 │
+│─────────────────────────────────────────────────────────────────────│
+│ (Y) allow  (N) deny  (PgUp/PgDn) scroll  (Esc) deny                 │
+╰─────────────────────────────────────────────────────────────────────╯
+```
+
+A new file shows its full content; an overwrite or an edit shows a
+diff. `Y` or Enter allows, `N` or Esc denies, and the keyboard belongs
+to the popup until you answer — nothing you type leaks into the input
+box. No answer before the countdown runs out is a no. On voice she says
+a one-liner ("Can I write backup.sh? It's on screen.") so you know to
+look; the details stay on screen, because nobody wants a diff read
+aloud.
+
+A denied write comes back to the model as *denied, do not retry*, and
+her prompt tells her to say so and stop.
+
+**What she can't touch, no matter what.** A deny list sits underneath
+the popup, and neither the model nor a reflexive `Y` gets past it:
+anything outside `~`; `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.config/ai-voice`
+(her own credentials), keyrings and browser profiles; shell startup
+files (`.bashrc`, `.zshrc`, `.profile`...); anything ending in `.key`,
+`.pem`, `.gpg` and the like. That list applies to *reading* too — a
+read puts the file into the prompt, and from there into history and
+the log.
+
+`edit_file` works by exact match: she reads the file, quotes the
+passage to change, and it has to appear exactly once — the same
+discipline a careful human uses with search-and-replace, and the one
+that keeps a 9B model from rewriting the wrong block with confidence.
+`write_file` on an existing path is the whole-file alternative, with
+a diff. Scripts get their executable bit when she says so or when the
+content starts with `#!`.
+
+```json
+"files": {
+    "enabled": true,
+    "approval_timeout": 120
+}
+```
+
+Stream-chat turns never see these tools — they aren't in the chat
+tool ceiling, so a viewer can't ask her to write anything.
+
+---
+
 # Memory
 
 Facts are written deliberately by the model, not scraped from every
@@ -1375,8 +1446,10 @@ install. What changes:
 `/facts` shows what's stored and which backend is live, and
 `memory-manager/` is the editor:
 
+<img width="1067" alt="The memory manager" src="assets/memory-manager.png" />
+
 ```bash
-python memory-manager/manager.py
+memory-manager/start.sh        # or: python memory-manager/manager.py
 ```
 
 opens a local page (127.0.0.1:8790, and only 127.0.0.1) to view,
@@ -1601,6 +1674,7 @@ defaults by unprotecting, committing, and protecting again.
 ai-voice/
 │
 ├── ai-voice-ctl.py
+├── alarm.py
 ├── assistant.py
 ├── chatroom.py
 ├── config.json
@@ -1608,6 +1682,8 @@ ai-voice/
 ├── control.py
 ├── desktop.py
 ├── diagnose.py
+├── factstore.py
+├── filetools.py
 ├── history.py
 ├── kokoro-say.py
 ├── llm.py
@@ -1616,6 +1692,9 @@ ai-voice/
 ├── longterm.py
 ├── machine.py
 ├── main.py
+├── memory-manager/
+│   ├── manager.py
+│   └── start.sh
 ├── plugins/
 │   ├── __init__.py   # the loader
 │   └── example.py    # template - copy this
@@ -1637,9 +1716,12 @@ ai-voice/
 │
 ├── agent/
 │   ├── agent.json
+│   ├── facts.db      # the sqlite memory backend (gitignored)
 │   └── memory.json
 │
 ├── assets/
+│   ├── alarm.wav
+│   ├── memory-manager.png
 │   ├── ui-conversation.png
 │   └── ui-help.png
 │

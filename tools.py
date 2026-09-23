@@ -699,3 +699,14 @@ def _web_search(query):
         lines.append(f"{index}. {title} - {body} ({(result.get('href') or '').strip()})")
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Files
+#
+# Registered from their own module because the policy - what may be
+# read, what must be asked - is most of the code, and it deserves a
+# file of its own. Imported last: filetools uses the @tool decorator
+# above, so it can't be imported until that exists.
+# ---------------------------------------------------------------------------
+import filetools  # noqa: E402,F401  (registers list_files/read_file/write_file/edit_file)
