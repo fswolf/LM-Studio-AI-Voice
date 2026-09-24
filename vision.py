@@ -20,7 +20,11 @@ import shutil
 import subprocess
 import tempfile
 
-from config import VISION_ENABLED, VISION_SCALE, VISION_MAX_BYTES
+import config
+# Read as config.X at each use, not imported by value - otherwise
+# /set vision.enabled false changes config and this module keeps a
+# stale copy, so the setting silently does nothing.
+from config import VISION_SCALE, VISION_MAX_BYTES
 
 # Set by capture(), consumed once by llm._tool_rounds.
 _pending = None
@@ -29,11 +33,11 @@ last_error = ""
 
 def available():
     """grim is the hard requirement; hyprctl only narrows it to a window."""
-    return VISION_ENABLED and shutil.which("grim") is not None
+    return config.VISION_ENABLED and shutil.which("grim") is not None
 
 
 def why_unavailable():
-    if not VISION_ENABLED:
+    if not config.VISION_ENABLED:
         return 'vision is off - set "vision": {"enabled": true} in agent.json'
 
     if shutil.which("grim") is None:

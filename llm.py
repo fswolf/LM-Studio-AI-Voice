@@ -579,6 +579,43 @@ class _Narrator:
         return text.strip()
 
 
+def _explain_refusal(status, body, payload):
+    """Turn LM Studio's error into a sentence about what to do.
+
+    A bare HTML "Internal Server Error" page is what its web server
+    sends when the request handler itself fell over - which, in
+    practice, means one of two things: the prompt no longer fits the
+    context the model was loaded with, or the model process died. Both
+    look identical from here, and both used to arrive as nine lines of
+    HTML in the conversation.
+    """
+    if "<html" in body.lower():
+        detail = "internal error, no details given"
+    else:
+        detail = body[:300].strip() or "no details given"
+
+    sent = lmstudio.estimate_tokens(payload)
+    window = lmstudio.context_length()
+    hint = ""
+
+    if window and sent >= window * 0.8:
+        hint = (f" This request was ~{sent} tokens against a {window}-token "
+                "context - almost certainly the prompt no longer fits. "
+                "/context shows the breakdown; /clear resets the "
+                "conversation, or raise the context length in LM Studio.")
+    elif window:
+        hint = (f" (~{sent} tokens sent, {window} available - so probably "
+                "the model itself, not the size. Check LM Studio's server "
+                "log; reloading the model usually clears it.)")
+    else:
+        hint = (f" (~{sent} tokens sent.) Usually the prompt outgrew the "
+                "model's context, or the model crashed - check LM Studio's "
+                "server log. /context shows what's being sent; /clear "
+                "resets the conversation.")
+
+    return f"LM Studio error (HTTP {status}): {detail}.{hint}"
+
+
 def _stream_deltas(payload):
     """Yield delta dicts from an OpenAI-style SSE response.
 
@@ -605,9 +642,7 @@ def _stream_deltas(payload):
             logbook.error("llm", "stream refused, HTTP %s: %s",
                           response.status_code, body)
 
-            raise RuntimeError(
-                f"LM Studio error (HTTP {response.status_code}): {body[:300]}"
-            )
+            raise RuntimeError(_explain_refusal(response.status_code, body, payload))
 
         for raw in response.iter_lines():
             line = (
@@ -897,6 +932,37 @@ def _generate(payload, on_text=None, on_sentence=None):
         return narrator.finish()
 
     return _content(_chat_completion(payload))
+
+
+def prompt_budget(text="hello"):
+    """What a turn would send, in rough tokens, part by part - built the
+    same way ask() builds it, without sending. For /context, and for
+    the moment a request starts failing and the question is "how big
+    has this got".
+    """
+    past = history.get_messages_full()
+    system = build_system_prompt(text, _timing_note(past))
+    replayed = []
+
+    for m in past:
+        replayed.extend(_replay(m))
+
+    demo = _demonstration() if _tools_supported and not _has_tool_example(replayed) else []
+    specs = tools.specs() if _tools_supported else []
+    memory_block = build_memory_prompt(text)
+    tools_block = build_tools_prompt()
+
+    parts = {
+        "persona + rules": lmstudio.estimate_tokens(system) - lmstudio.estimate_tokens(memory_block) - lmstudio.estimate_tokens(tools_block),
+        "memory (facts + preferences)": lmstudio.estimate_tokens(memory_block),
+        "tools nudge": lmstudio.estimate_tokens(tools_block),
+        "tool schemas": lmstudio.estimate_tokens(specs),
+        "tool example": lmstudio.estimate_tokens(demo),
+        f"history ({len(past)} turns + summary)": lmstudio.estimate_tokens(replayed),
+    }
+    total = sum(max(0, v) for v in parts.values())
+
+    return parts, total, lmstudio.context_length()
 
 
 def ask(text, model, on_text=None, on_sentence=None,

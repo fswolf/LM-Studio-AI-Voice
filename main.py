@@ -504,13 +504,25 @@ def handle_input(text):
 
         import tools as tool_registry
 
-        lines = ["Tools she can call: " + ", ".join(tool_registry.names())]
+        live, possible = tool_registry.budget()
+        saved = possible - live
+        header = f"{live} tokens of tool schemas in every prompt"
+
+        if saved:
+            header += f" ({saved} saved by switches)"
+
+        lines = [header + " - Tab twice to change them:"]
 
         # A tool that isn't offered is invisible otherwise, and "why
         # didn't she look at my screen" has exactly one answer worth
         # printing: because she wasn't told she could.
-        for name, why in tool_registry.unavailable():
-            lines.append(f"  {name} is NOT offered - {why}")
+        for name, on, ready, why, cost in tool_registry.inventory():
+            if not ready:
+                lines.append(f"   -- {name:<16} {why}")
+            else:
+                lines.append(
+                    f"  {'on ' if on else 'off'} {name:<16} {cost:>5} tok"
+                )
 
         ui.add_message("system", "\n".join(lines))
         return
@@ -766,6 +778,36 @@ def handle_input(text):
                 ui.add_message("system", f"Repair failed: {e}")
 
         threading.Thread(target=repair, daemon=True).start()
+        return
+
+    if text == "/context":
+        import llm
+
+        try:
+            parts, total, window = llm.prompt_budget()
+        except Exception as e:
+            ui.add_message("system", f"Couldn't size the prompt: {e}")
+            return
+
+        rows = "\n".join(f"  {v:6d}  {k}" for k, v in parts.items())
+        verdict = (
+            f"  {total:6d}  total, of a {window}-token context "
+            f"({100 * total // window}% full)" if window else
+            f"  {total:6d}  total (LM Studio didn't report the context length)"
+        )
+        warning = ""
+
+        if window and total >= window * 0.8:
+            warning = (
+                "\nThat's too close. Options: /clear the conversation, lower "
+                "history.max_raw_messages or long_term_memory.context_facts "
+                "with /set, or raise the context length in LM Studio."
+            )
+
+        ui.add_message(
+            "system",
+            f"Roughly what every turn sends (tokens):\n{rows}\n{verdict}{warning}",
+        )
         return
 
     if text == "/scroll":

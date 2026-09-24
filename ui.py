@@ -70,9 +70,15 @@ _on_submit = None
 _on_hotkey = None
 _conv_window = None
 _scrollback = 0  # lines scrolled up from the bottom; 0 = pinned to latest
-_help_visible = False
+# Which overlay is up, if any: None, "help" or "tools". Tab cycles
+# through them and back to the conversation.
+_pane = None
+_panes = (None, "help", "tools")
 _help_scroll = 0  # lines scrolled down from the top of the help text
 _help_window = None
+_tool_cursor = 0  # selected row in the tools pane
+_tool_scroll = 0
+_tool_window = None
 _approval = None  # the pending permission request, or None
 _approval_scroll = 0
 _approval_window = None
@@ -640,11 +646,185 @@ def scroll_report():
         f"conversation: {conv_lines} lines, pane {_window_height()} tall, "
         f"scrollback {_scrollback} (max {max(0, conv_lines - _window_height())})\n"
         f"help: {_help_line_count()} lines, pane {_help_height()} tall, "
-        f"scroll {_help_scroll}, visible={_help_visible}\n"
+        f"scroll {_help_scroll}, pane={_pane}\n"
         f"events since start: conversation wheel {_events['conv_wheel']}, "
         f"help wheel {_events['help_wheel']}, other mouse {_events['other_mouse']}, "
         f"PgUp/PgDn {_events['page_keys']}, arrows {_events['arrow_keys']}"
     )
+
+
+# ---------------------------------------------------------------------------
+# The tools pane (Tab, twice)
+#
+# Every tool schema sits in the context window on every single turn,
+# whether or not it is ever called - a few hundred tokens each, a few
+# thousand in total. That is invisible until the day a request stops
+# fitting, which is a bad day to find out. So this lists them with what
+# they cost, lets you switch the situational ones off, and shows the
+# total moving as you do it.
+#
+# Off is not the same as unavailable: a tool with no `grim` installed
+# says so and can't be switched on, because the switch wouldn't be the
+# thing standing in the way.
+# ---------------------------------------------------------------------------
+def _next_pane():
+    return _panes[(_panes.index(_pane) + 1) % len(_panes)]
+
+
+def _tool_rows():
+    try:
+        import tools
+
+        return tools.inventory()
+    except Exception:
+        return []
+
+
+def _tool_fragments():
+    rows = _tool_rows()
+    fragments = [("", "\n")]
+
+    if not rows:
+        return fragments + [("class:footer", "  no tools registered\n")]
+
+    try:
+        import tools
+        import lmstudio
+
+        live, possible = tools.budget()
+        window = lmstudio.context_length()
+    except Exception:
+        live = possible = window = 0
+
+    saved = possible - live
+    header = f" {live} tokens of tool schemas in every prompt"
+
+    if saved:
+        header += f" ({saved} saved)"
+
+    if window:
+        header += f", of a {window}-token context"
+
+    fragments.append(("class:label bold", header + "\n"))
+    fragments.append(("class:footer",
+                      " (space) toggle  (up/down) choose  (Tab) back\n\n"))
+
+    for index, (name, on, ready, why, cost) in enumerate(rows):
+        selected = index == _tool_cursor
+        pointer = " >" if selected else "  "
+
+        if not ready:
+            mark, mark_style = "--", "class:dim"
+        elif on:
+            mark, mark_style = "on", "class:ok"
+        else:
+            mark, mark_style = "off", "class:warn"
+
+        name_style = "class:agent" if (on and ready) else "class:dim"
+
+        if selected:
+            name_style += " bold"
+
+        fragments.append(("class:key" if selected else "class:dim", pointer))
+        fragments.append((mark_style, f" {mark} "))
+        fragments.append((name_style, f"{name:<16}"))
+        fragments.append(("class:footer", f"{cost:>5} tok"))
+
+        if not ready:
+            fragments.append(("class:dim", f"   {why}"))
+
+        fragments.append(("", "\n"))
+
+    return fragments
+
+
+def _tool_line_count():
+    return sum(text.count("\n") for _style, text in _tool_fragments())
+
+
+def _tool_height():
+    if _tool_window is not None and _tool_window.render_info is not None:
+        return max(1, _tool_window.render_info.window_height)
+
+    return 10
+
+
+def _tool_move(step):
+    """Move the selection, and keep it on screen."""
+    global _tool_cursor, _tool_scroll
+
+    rows = len(_tool_rows())
+
+    if not rows:
+        return
+
+    _tool_cursor = max(0, min(_tool_cursor + step, rows - 1))
+
+    # Three header lines sit above the first row.
+    line = _tool_cursor + 3
+    height = _tool_height()
+
+    if line < _tool_scroll:
+        _tool_scroll = line
+    elif line >= _tool_scroll + height:
+        _tool_scroll = line - height + 1
+
+    _refresh()
+
+
+def _tool_toggle():
+    """Flip the selected tool, unless its dependencies are missing."""
+    rows = _tool_rows()
+
+    if not 0 <= _tool_cursor < len(rows):
+        return
+
+    name, on, ready, why, _cost = rows[_tool_cursor]
+
+    if not ready:
+        add_message("system", f"{name} can't be switched on - {why}")
+
+        return
+
+    try:
+        import tools
+
+        tools.set_enabled(name, not on)
+    except Exception as e:
+        add_message("system", f"Couldn't change {name}: {e}")
+
+    _refresh()
+
+
+def _tool_scroll_by(lines):
+    global _tool_scroll
+
+    _tool_scroll = max(0, min(
+        _tool_scroll + lines,
+        max(0, _tool_line_count() - _tool_height()),
+    ))
+    _refresh()
+
+
+def _tool_scroll_position(window):
+    return _tool_scroll
+
+
+def _tool_cursor_point():
+    return Point(x=0, y=_tool_scroll)
+
+
+class _ToolControl(FormattedTextControl):
+    def mouse_handler(self, mouse_event):
+        if mouse_event.event_type == MouseEventType.SCROLL_UP:
+            _tool_scroll_by(-WHEEL_LINES)
+            return None
+
+        if mouse_event.event_type == MouseEventType.SCROLL_DOWN:
+            _tool_scroll_by(WHEEL_LINES)
+            return None
+
+        return super().mouse_handler(mouse_event)
 
 
 # ---------------------------------------------------------------------------
@@ -877,7 +1057,7 @@ _HELP_SECTIONS = [
         ("(wheel)", "same - arrow keys too"),
         ("(F2)", "mouse capture: wheel scroll vs selecting text"),
         ("(End)", "back to newest / top of help"),
-        ("(Tab)", "close this window"),
+        ("(Tab)", "cycle: conversation, help, tools"),
         ("(ESC)", "quit"),
     ]),
     ("Voice modes", [
@@ -927,7 +1107,14 @@ _HELP_SECTIONS = [
         "memory-manager/start.sh opens the editor in your browser.",
     ]),
     ("Tools", [
-        ("/tools", "what the model can call - and what's off, and why"),
+        "Tab twice opens the tools pane: every tool, what its schema",
+        "costs in tokens, and space to switch it on or off. Those",
+        "schemas ride along in every single prompt, so switching off",
+        "the ones you rarely ask for buys back context. Saved to",
+        "config.json; a tool whose dependencies are missing says so",
+        "and can't be switched on.",
+        "",
+        ("/tools", "the same list, printed into the conversation"),
         ("/tooltest", "canned requests, two ways each: does this model"),
         "                actually pick the right tool? Run it after changing models.",
         ("/repair", "rewrite old keyword-rescued reminders as the tool"),
@@ -950,6 +1137,7 @@ _HELP_SECTIONS = [
     ("Session", [
         ("/look", "list windows, or test a screenshot"),
         ("/log", "tail the debug log without leaving the app"),
+        ("/context", "how big every prompt is vs the model's context"),
         ("/mouse", "same as F2, and saves the choice"),
         ("/set", "alone lists every setting with its value; /set a.b x"),
         "                changes one, saved to config.json, most apply live.",
@@ -1138,16 +1326,20 @@ def _build_keys():
     def _(event):
         pass
 
+    @keys.add(" ", filter=Condition(lambda: _pane == "tools" and not approving()))
+    def _(event):
+        _tool_toggle()
+
     @keys.add("tab")
     def _(event):
-        global _help_visible, _help_scroll
+        global _pane, _help_scroll
 
         if approving():
             return
 
-        _help_visible = not _help_visible
+        _pane = _next_pane()
 
-        if _help_visible:
+        if _pane == "help":
             _help_scroll = 0  # always open at the top
 
         _refresh()
@@ -1156,14 +1348,14 @@ def _build_keys():
     def _(event):
         # Esc answers a permission popup with no, closes the help window
         # if it's open, quits otherwise - same as sfav's notes popup.
-        global _help_visible
+        global _pane
 
         if approving():
             _answer_approval(False)
             return
 
-        if _help_visible:
-            _help_visible = False
+        if _pane is not None:
+            _pane = None
             _refresh()
             return
 
@@ -1183,7 +1375,9 @@ def _build_keys():
 
         if approving():
             _approval_scroll_by(-max(1, _approval_height() - 2))
-        elif _help_visible:
+        elif _pane == "tools":
+            _tool_move(-max(1, _tool_height() - 3))
+        elif _pane == "help":
             _help_scroll_by(-max(1, _help_height() - 2))
         else:
             _scroll_by(_page_size())
@@ -1194,7 +1388,9 @@ def _build_keys():
 
         if approving():
             _approval_scroll_by(max(1, _approval_height() - 2))
-        elif _help_visible:
+        elif _pane == "tools":
+            _tool_move(max(1, _tool_height() - 3))
+        elif _pane == "help":
             _help_scroll_by(max(1, _help_height() - 2))
         else:
             _scroll_by(-_page_size())
@@ -1213,7 +1409,9 @@ def _build_keys():
 
         if approving():
             _approval_scroll_by(-1)
-        elif _help_visible:
+        elif _pane == "tools":
+            _tool_move(-1)
+        elif _pane == "help":
             _help_scroll_by(-1)
         else:
             _scroll_by(1)
@@ -1224,7 +1422,9 @@ def _build_keys():
 
         if approving():
             _approval_scroll_by(1)
-        elif _help_visible:
+        elif _pane == "tools":
+            _tool_move(1)
+        elif _pane == "help":
             _help_scroll_by(1)
         else:
             _scroll_by(-1)
@@ -1235,7 +1435,7 @@ def _build_keys():
         # the top of the help, the newest line of the conversation.
         global _scrollback, _help_scroll
 
-        if _help_visible:
+        if _pane == "help":
             _help_scroll = 0
         else:
             _scrollback = 0
@@ -1252,7 +1452,7 @@ def run(on_submit, on_hotkey=None):
     anything slow belongs on a worker thread.
     """
     global _app, _on_submit, _on_hotkey, _conv_window, _help_window
-    global _approval_window
+    global _approval_window, _tool_window
 
     _on_submit = on_submit
     _on_hotkey = on_hotkey
@@ -1308,13 +1508,27 @@ def run(on_submit, on_hotkey=None):
 
     _help_window = help_window
 
+    tools_window = Window(
+        content=_ToolControl(
+            _tool_fragments,
+            get_cursor_position=_tool_cursor_point,
+        ),
+        height=Dimension(min=3, weight=1),
+        wrap_lines=False,
+        get_vertical_scroll=_tool_scroll_position,
+        always_hide_cursor=True,
+        right_margins=[ScrollbarMargin()],
+    )
+
+    _tool_window = tools_window
+
     # Help replaces the conversation panel rather than floating over it.
     # A float has to be full width anyway - a 2-cell emoji whose first
     # half falls outside the float still gets drawn in full and shunts
     # the border a column right, and Luna uses emoji constantly - and a
     # full-width float left the conversation's leftover rows and bottom
     # border poking out underneath. Swapping is exact and artifact-free.
-    showing_help = Condition(lambda: _help_visible)
+    showing_help = Condition(lambda: _pane == "help")
 
     body = HSplit([
         _framed(
@@ -1326,11 +1540,15 @@ def run(on_submit, on_hotkey=None):
         ),
         ConditionalContainer(
             _framed(conversation_window, title="Conversation"),
-            filter=~showing_help,
+            filter=Condition(lambda: _pane is None),
         ),
         ConditionalContainer(
             _framed(help_window, title="Help"),
             filter=showing_help,
+        ),
+        ConditionalContainer(
+            _framed(tools_window, title="Tools - Tab again to close"),
+            filter=Condition(lambda: _pane == "tools"),
         ),
         _framed(input_area, title="tab for help"),
     ])

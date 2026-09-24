@@ -327,6 +327,11 @@ DESKTOP_ENABLED = bool(_desktop_cfg.get("enabled", True))
 # a deny list; write_file/edit_file pop an approval window in the TUI
 # and wait. No answer within approval_timeout seconds is a no.
 #   "files": { "enabled": true, "approval_timeout": 120 }
+# Tools switched off by hand, by name. Not in SETTINGS because it's a
+# list rather than a scalar - the tools pane (Tab, twice) edits it, and
+# tools.set_enabled writes it back.
+TOOLS_DISABLED = list(setting("tools", {}).get("disabled", []))
+
 _files_cfg = setting("files", {})
 FILES_ENABLED = bool(_files_cfg.get("enabled", True))
 FILES_APPROVAL_TIMEOUT = float(_files_cfg.get("approval_timeout", 120))

@@ -20,7 +20,8 @@ thing that can't be - so writing to it is a separate switch.
 import shutil
 import subprocess
 
-from config import DESKTOP_ENABLED, DESKTOP_CLIPBOARD
+import config
+# Read live off config (see vision.py) so /set applies without a restart.
 
 # Long enough for a player that's paging in from disk, short enough
 # that a wedged one costs a moment rather than the turn.
@@ -68,7 +69,7 @@ def _has(*names):
 # Playback
 # ---------------------------------------------------------------------------
 def media_available():
-    return DESKTOP_ENABLED and shutil.which("playerctl") is not None
+    return config.DESKTOP_ENABLED and shutil.which("playerctl") is not None
 
 
 def now_playing():
@@ -122,7 +123,7 @@ _SINK = "@DEFAULT_AUDIO_SINK@"
 
 
 def volume_available():
-    return DESKTOP_ENABLED and _has("wpctl", "pactl") is not None
+    return config.DESKTOP_ENABLED and _has("wpctl", "pactl") is not None
 
 
 def _wpctl_volume():
@@ -233,15 +234,15 @@ def set_muted(muted):
 # Clipboard
 # ---------------------------------------------------------------------------
 def clipboard_available():
-    return (DESKTOP_ENABLED and DESKTOP_CLIPBOARD
+    return (config.DESKTOP_ENABLED and config.DESKTOP_CLIPBOARD
             and _has("wl-paste", "xclip", "xsel") is not None)
 
 
 def why_no_clipboard():
-    if not DESKTOP_ENABLED:
+    if not config.DESKTOP_ENABLED:
         return 'the desktop tools are off - set "desktop": {"enabled": true}'
 
-    if not DESKTOP_CLIPBOARD:
+    if not config.DESKTOP_CLIPBOARD:
         return 'clipboard access is off - set "desktop": {"clipboard": true}'
 
     return ("no clipboard tool is installed - wl-clipboard on Wayland "
@@ -302,7 +303,7 @@ def write_clipboard(text):
 # Windows
 # ---------------------------------------------------------------------------
 def windows_available():
-    return DESKTOP_ENABLED and shutil.which("hyprctl") is not None
+    return config.DESKTOP_ENABLED and shutil.which("hyprctl") is not None
 
 
 def focus(phrase):

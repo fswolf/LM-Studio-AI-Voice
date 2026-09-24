@@ -78,12 +78,91 @@ def specs(only=None):
 
     return [
         entry["spec"] for name, entry in _REGISTRY.items()
-        if entry["available"]() and (allowed is None or name in allowed)
+        if entry["available"]() and enabled(name)
+        and (allowed is None or name in allowed)
     ]
 
 
 def names():
-    return sorted(name for name, entry in _REGISTRY.items() if entry["available"]())
+    return sorted(
+        name for name, entry in _REGISTRY.items()
+        if entry["available"]() and enabled(name)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Switching tools off
+#
+# Separate from `available` on purpose: that answers "can this tool
+# work here" (is grim installed, is the transcript on), which is about
+# the machine. This answers "do you want it offered", which is about
+# the context window - every schema costs a few hundred tokens of it,
+# every turn, whether or not it is ever called.
+#
+# Stored as an off-list rather than an on-list so a tool added later is
+# offered by default. Opting out is a decision; opting in shouldn't be
+# a chore.
+# ---------------------------------------------------------------------------
+def enabled(name):
+    return name not in config.TOOLS_DISABLED
+
+
+def set_enabled(name, on):
+    """Turn one tool on or off, saved to config.json. Returns the new
+    state, or None if there's no such tool."""
+    if name not in _REGISTRY:
+        return None
+
+    off = set(config.TOOLS_DISABLED)
+    off.discard(name) if on else off.add(name)
+    config.TOOLS_DISABLED = sorted(off)
+
+    try:
+        # _store, not save_setting: a list isn't a /set-able scalar, so
+        # it stays out of SETTINGS - same escape hatch plugin switches use.
+        config._store("tools.disabled", config.TOOLS_DISABLED)
+    except Exception:
+        pass  # a failed save costs the preference, not the session
+
+    return on
+
+
+def cost(name):
+    """Roughly what this tool's schema costs in tokens, every turn."""
+    entry = _REGISTRY.get(name)
+
+    return int(len(json.dumps(entry["spec"])) / 3.5) if entry else 0
+
+
+def inventory():
+    """(name, enabled, available, why, cost) for every registered tool,
+    for the tools pane and /tools."""
+    rows = []
+
+    for name, entry in sorted(_REGISTRY.items()):
+        ready = entry["available"]()
+        rows.append((
+            name,
+            enabled(name),
+            ready,
+            "" if ready else entry["why"](),
+            cost(name),
+        ))
+
+    return rows
+
+
+def budget():
+    """(tokens actually being sent, tokens if everything were on)."""
+    live = sum(
+        cost(name) for name, entry in _REGISTRY.items()
+        if entry["available"]() and enabled(name)
+    )
+    possible = sum(
+        cost(name) for name, entry in _REGISTRY.items() if entry["available"]()
+    )
+
+    return live, possible
 
 
 def unavailable():

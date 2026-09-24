@@ -17,6 +17,9 @@ import requests
 from config import LM_URL
 
 MODELS_URL = LM_URL.replace("/chat/completions", "/models")
+# LM Studio's own (non-OpenAI) endpoint: the only place it reports the
+# context length a model was actually loaded with.
+NATIVE_MODELS_URL = LM_URL.split("/v1/")[0] + "/api/v0/models"
 
 _lock = threading.Lock()
 
@@ -119,3 +122,36 @@ def watch(interval=20):
             threading.Event().wait(interval)
 
     threading.Thread(target=loop, daemon=True).start()
+
+
+def context_length(timeout=3):
+    """Tokens the loaded model was given, or 0 if LM Studio won't say.
+
+    This is the number every "HTTP 500" out of nowhere is really about:
+    the prompt - persona, facts, summary, fifteen turns and the tool
+    schemas - has to fit in it, and the schemas alone are a few
+    thousand tokens now.
+    """
+    try:
+        response = requests.get(NATIVE_MODELS_URL, timeout=timeout)
+        response.raise_for_status()
+
+        for entry in response.json().get("data") or []:
+            if entry.get("state") == "loaded" or entry.get("loaded_context_length"):
+                return int(entry.get("loaded_context_length")
+                           or entry.get("max_context_length") or 0)
+    except Exception:
+        pass
+
+    return 0
+
+
+def estimate_tokens(payload):
+    """Rough size of a chat payload. 3.5 chars/token is close enough for
+    English plus JSON to say "this is 90% of the window"."""
+    try:
+        import json
+
+        return int(len(json.dumps(payload)) / 3.5)
+    except Exception:
+        return 0

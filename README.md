@@ -361,6 +361,7 @@ an annoyance.
 | Enter | Send typed message |
 | Tab | Open / close the help panel |
 | PgUp / PgDn | Scroll the conversation - or the help, when it's open |
+| Tab | Cycle conversation → help → tools |
 | F2 | Toggle mouse capture — see below |
 | End | Jump back to the newest message |
 | Esc | Quit |
@@ -405,6 +406,7 @@ Slash commands:
 | `/alarm off` | Stop one that's ringing; `/alarm test` hears the tone |
 | `/look` | List windows, or test a screenshot |
 | `/log` | Tail the debug log without leaving the app |
+| `/context` | What every turn sends, in tokens, against the model's context length |
 | `/mouse` | Wheel scrolling vs. being able to select text |
 | `/set` | List every setting, or change one — saved to `config.json` |
 | `/tools` | Which tools the model can call — and which it can't, and why |
@@ -687,6 +689,39 @@ check the time, then schedule something.
 | `read_page` | Open a link and read it, not just the search snippet |
 | `search_history` | Look through past conversations for something |
 | `web_search` | DuckDuckGo, for anything it can't know |
+
+## Turning tools off
+
+Every schema above rides along in **every prompt**, called or not — a
+few hundred tokens each, ~3,000 in total. That's invisible until the
+day a request stops fitting the context window, which is a bad day to
+find out.
+
+**Tab twice** opens the tools pane: every tool, what it costs, and
+space to switch it on or off. The total at the top moves as you go, so
+you can see what you're buying back.
+
+```
+ 3083 tokens of tool schemas in every prompt (757 saved), of a 8192-token context
+ (space) toggle  (up/down) choose  (Tab) back
+
+   on  get_datetime        97 tok
+ > off look_at_screen     178 tok
+   on  set_alarm          226 tok
+   -- clipboard               wl-clipboard isn't installed
+```
+
+Choices are saved to `config.json` under `tools.disabled`, so they
+survive a restart. `/tools` prints the same list into the conversation.
+
+Switching off isn't the same as unavailable: `--` means the tool can't
+work here at all (no `grim`, transcript off), and no switch will change
+that — so the pane says why instead of pretending.
+
+Worth knowing which way round to reach for: switching tools off buys
+back a few hundred tokens, while raising the model's context length in
+LM Studio buys back thousands and costs nothing you're using. Do that
+first; the pane is for running deliberately lean.
 
 A tool whose dependencies are missing isn't offered at all, rather than
 offered and failed. Telling a model it can see when `grim` isn't
@@ -1612,6 +1647,13 @@ to judge — and to say it doesn't recall rather than stretch one to fit.
 
 ---
 
+# Extras
+
+```bash
+python3 kokoro-say.py                 # read the clipboard aloud through
+                                      # the TTS server - bind it to a key
+```
+
 ---
 
 # Project Structure
@@ -1646,7 +1688,6 @@ ai-voice/
 │   └── example.py    # template - copy this
 │                     # (anything else here is yours, gitignored)
 ├── ptt.py
-├── push.sh
 ├── reminders.py
 ├── speech.py
 ├── state.py
