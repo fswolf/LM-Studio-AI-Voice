@@ -22,6 +22,8 @@ import threading
 
 import requests
 
+import logbook
+
 from datetime import datetime
 
 from config import (
@@ -55,6 +57,32 @@ def load():
             _data = {"summary": "", "messages": []}
     else:
         _data = {"summary": "", "messages": []}
+
+    if _repair_arguments():
+        # A file written before arguments were truncated safely. Left
+        # alone it would 500 every turn, and the only visible cure was
+        # /clear - which throws away the conversation to fix a field
+        # nobody can see.
+        logbook.warn("history", "repaired tool arguments that weren't valid JSON")
+        save()
+
+
+def _repair_arguments():
+    """Make every stored tool call parseable again. Returns True if
+    anything needed fixing."""
+    fixed = False
+
+    for message in _data.get("messages", []):
+        for call in message.get("tools") or []:
+            raw = call.get("arguments", "")
+
+            try:
+                json.loads(raw or "{}")
+            except ValueError:
+                call["arguments"] = _compact_arguments(raw, limit=0)
+                fixed = True
+
+    return fixed
 
 
 def save():
@@ -101,6 +129,41 @@ def get_messages_full() -> list:
 MAX_STORED_RESULT = 200
 
 
+def _compact_arguments(raw, limit=MAX_STORED_RESULT):
+    """Shrink a tool call's arguments, and keep the result valid JSON.
+
+    Blind truncation used to leave a fragment - `{"path": "x.py",
+    "content": "#!/usr/bin/env python3\n\"\"` - which no longer parses.
+    llm._replay feeds stored arguments back into *every* later request,
+    where LM Studio parses them to render the chat template, so one
+    write_file with a long body would 500 every turn that followed it
+    until the history was cleared.
+
+    The keys are the part worth keeping: they teach the shape of the
+    call. A long value becomes a note about its length instead.
+    """
+    raw = str(raw if raw is not None else "")
+
+    if len(raw) <= limit:
+        return raw
+
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return "{}"  # unparseable to begin with - store nothing, not a shard
+
+    if not isinstance(data, dict):
+        return "{}"
+
+    room = max(24, limit // max(1, len(data)))
+
+    for key, value in list(data.items()):
+        if isinstance(value, str) and len(value) > room:
+            data[key] = f"{value[:room]}... [{len(value) - room} more characters]"
+
+    return json.dumps(data)
+
+
 def add_message(role: str, content: str, tools=None):
     """Record a turn, and what it called to get there.
 
@@ -122,7 +185,7 @@ def add_message(role: str, content: str, tools=None):
         entry["tools"] = [
             {
                 "name": call.get("name", ""),
-                "arguments": str(call.get("arguments", ""))[:MAX_STORED_RESULT],
+                "arguments": _compact_arguments(call.get("arguments", "")),
                 "result": str(call.get("result", ""))[:MAX_STORED_RESULT],
             }
             for call in tools
@@ -150,7 +213,7 @@ def record_tool_use(name, arguments, result, index=None):
     """
     call = {
         "name": name,
-        "arguments": str(arguments)[:MAX_STORED_RESULT],
+        "arguments": _compact_arguments(arguments),
         "result": str(result)[:MAX_STORED_RESULT],
     }
 

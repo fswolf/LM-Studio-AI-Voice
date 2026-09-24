@@ -240,6 +240,14 @@ def _timestamped(role, content, timestamp):
     return {"role": role, "content": content}
 
 
+def _valid_json(raw):
+    """`raw` if it parses as a JSON object, "{}" otherwise."""
+    try:
+        return raw if raw and isinstance(json.loads(raw), dict) else "{}"
+    except (ValueError, TypeError):
+        return "{}"
+
+
 def _replay(message):
     """One stored turn, as the messages the model should see.
 
@@ -264,7 +272,10 @@ def _replay(message):
                 "type": "function",
                 "function": {
                     "name": call.get("name", ""),
-                    "arguments": call.get("arguments", "{}") or "{}",
+                    # Belt and braces: LM Studio parses this to render
+                    # the chat template, and a fragment that doesn't
+                    # parse comes back as an HTML 500 with no clue why.
+                    "arguments": _valid_json(call.get("arguments")),
                 },
             }
             for index, call in enumerate(calls)
