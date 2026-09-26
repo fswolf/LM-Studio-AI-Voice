@@ -28,15 +28,15 @@ tts/*/models/
 tts/*/voices/*
 !tts/*/voices/README.md
 
-# Plugins are private by default: anything you drop in plugins/ is
-# yours - channel names, account names, whatever you wire her up to -
-# so nothing there is tracked unless it is listed below. Add a line to
-# publish one; the credentials it reads stay out either way, because
-# those live in ~/.config rather than beside the code.
-plugins/*
-!plugins/__init__.py
-!plugins/example.py
-!plugins/pomf.py
+# Plugins are tracked - all of them, including any you add later.
+# This used to be an allow-list, which meant a new plugin was invisible
+# to `git add -A` until you remembered to name it here, and the only
+# symptom was a push that quietly left it behind.
+#
+# The trade is that plugins/ now goes to GitHub as-is, so keep anything
+# private out of the file itself. Credentials already live in
+# ~/.config/ai-voice/ rather than beside the code, and channel or
+# account names belong in config.json, not hard-coded in the plugin.
 
 # Credentials. The real ones live in ~/.config/ai-voice/, outside the
 # repo entirely - these are here in case a copy ever lands beside the
