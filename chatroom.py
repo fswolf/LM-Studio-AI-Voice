@@ -96,10 +96,17 @@ class ChatRoom:
     what she's allowed to do about it - happens here.
     """
 
-    def __init__(self, name, owner, settings, where=None):
+    def __init__(self, name, owner, settings, where=None, reply=None):
         self.name = name
         self.owner = owner or "the streamer"
         self.where = where or f"{self.owner}'s public stream chat"
+
+        # Optional. A one-way transport like pomf leaves it None and she
+        # only answers out loud; a two-way one like IRC passes a
+        # callback and gets reply(who, answer) after each turn. It is
+        # called after the answer exists and cannot influence the turn,
+        # so it can't widen what a chat message is allowed to reach.
+        self._reply = reply
 
         self.tools = allowed_tools(settings.get("tools"))
         self.cooldown = float(settings.get("cooldown_seconds", 8))
@@ -217,7 +224,7 @@ class ChatRoom:
             try:
                 self._last_reply_at = time.time()
 
-                assistant.respond_to_chat(
+                answer = assistant.respond_to_chat(
                     self.prompt_for(who, message),
                     model,
                     source=self.name,
@@ -229,6 +236,16 @@ class ChatRoom:
                 self.answered += 1
             except Exception:
                 logbook.exception(self.name, "failed to answer a chat message")
+                continue
+
+            # Separately, and after the count: she has already said it
+            # out loud by here, so a transport that can't post the reply
+            # back is a degraded room, not a failed turn.
+            if self._reply and answer:
+                try:
+                    self._reply(who, answer)
+                except Exception:
+                    logbook.exception(self.name, "couldn't post the reply back")
 
     def _wait_for_a_gap(self):
         """Hold until the global cooldown has passed and she's free.

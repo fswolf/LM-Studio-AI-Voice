@@ -42,6 +42,7 @@ plugins/*
 # repo entirely - these are here in case a copy ever lands beside the
 # code by accident.
 pomf.json
+irc.json
 *.key
 
 # Editor / OS noise

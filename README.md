@@ -1203,6 +1203,67 @@ request-forgery primitive pointed at your LAN.
 `chat` is shared policy for every chat plugin; each plugin's own block
 is merged over it, so a new one gets the limits for free.
 
+### IRC
+
+`plugins/irc.py` — Libera.Chat and `#gameranger` by default, stdlib
+only. IRC is a line protocol over a socket, and the libraries that wrap
+it are bigger than the part of it this needs.
+
+```json
+"irc": {
+    "enabled": false,
+    "server": "irc.libera.chat",
+    "port": 6697,
+    "tls": true,
+    "channel": "#gameranger",
+    "nick": "",
+    "post_replies": true,
+    "max_reply_lines": 3
+}
+```
+
+`/irc on` to join, `/irc` for status. `nick` empty means her own name,
+lowercased.
+
+**Unlike pomf, she talks back.** pomf is one-way — she reads the room
+and answers out loud. Here she also posts the answer into the channel,
+which makes her a visible bot in somebody else's room. That is what
+`max_reply_lines` and the send queue are for; set `post_replies` to
+`false` to keep her silent on the wire and audible only to you.
+
+Being a guest in a public channel is most of the work:
+
+| Concern | What it does |
+|---------|--------------|
+| PING | Answered with the server's own token, unthrottled, ahead of everything else — a late PONG is a disconnect |
+| Flooding | One line every 2s, queued. Libera kills you for "Excess Flood" and the ban outlasts the session |
+| Line length | Split on words at 400 **bytes**, not characters — the server truncates by bytes, and a chopped emoji arrives as mojibake |
+| Long answers | Capped at `max_reply_lines` and visibly clipped with `...` rather than dumped into the room |
+| Private messages | Ignored. Answering DMs makes her a private oracle for anyone who opens a query window, with none of the social pressure of a room watching |
+| CTCP | `ACTION` (`/me`) reads as speech; every other CTCP is dropped rather than answered |
+| Her own nick | Added to `ignore` automatically. pomf doesn't need this because she never posts there; here she does, and one reply containing her own name is an endless loop in public |
+| Control characters | Stripped from outgoing text — a `\r\n` in a reply is command injection on a line protocol |
+| Reconnects | Exponential backoff with jitter, capped at five minutes. Hammering somebody else's IRC server is how a host gets K-lined |
+
+The tool ceiling is unchanged and still applies: a stranger in
+`#gameranger` reaches exactly what a stranger in stream chat reaches.
+
+`ChatRoom` gained one optional argument for this — `reply=`, a callback
+run *after* the answer exists. It can't influence the turn or widen what
+a chat message is allowed to reach, and a transport that throws inside
+it loses the post, not the turn.
+
+**If the channel needs a registered nick**, SASL credentials go outside
+the repo, beside the pomf ones in `~/.config/ai-voice/irc.json`:
+
+```json
+{"sasl_user": "luna", "sasl_password": "..."}
+```
+
+SASL authenticates *during* registration rather than after it, which
+matters: a channel with `+r` rejects the JOIN of an unidentified nick,
+and a NickServ message sent after JOIN is sent after it was refused.
+
 ---
 
 # Reminders
