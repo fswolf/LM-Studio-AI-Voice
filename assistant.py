@@ -24,6 +24,18 @@ import ui
 _turn = threading.Lock()
 
 
+def _note_mood(text, model):
+    """Her mood hears what Ryan says. Deliberately not wired into
+    respond_to_chat: a stranger in stream chat being sweet to her
+    shouldn't move the same dial he does."""
+    try:
+        import mood
+
+        mood.note_affection(text, model)
+    except Exception:
+        pass  # decoration; never the reason a turn fails
+
+
 def respond(text, model):
     """Send a turn to the model and speak the reply as it arrives.
 
@@ -38,6 +50,8 @@ def respond(text, model):
     screen, the same bargain barge-in makes. Interrupting should cost
     you the audio, never the answer.
     """
+    _note_mood(text, model)
+
     if _turn.locked():
         logbook.info("turn", "new message while speaking - cutting the last one short")
         state.stop_speaking = True

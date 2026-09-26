@@ -23,6 +23,7 @@ from prompt_toolkit.application import Application
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.filters import Condition
+from prompt_toolkit.formatted_text import split_lines
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import (
     ConditionalContainer,
@@ -60,6 +61,7 @@ state = {
     "voice_server": "unknown",
     "status": "Idle",
     "memory": "Loaded",
+    "mood": "",
     "controls": "",
     "mode": "auto",
 }
@@ -271,6 +273,16 @@ def set_model(label: str):
     _refresh()
 
 
+def set_mood(text: str):
+    """The Mood row. Empty hides the row entirely, so turning moods off
+    doesn't leave a blank line behind."""
+    with _lock:
+        if state["mood"] == text:
+            return
+        state["mood"] = text
+    _refresh()
+
+
 def set_memory(text: str):
     """The Memory row: which backend, how many facts. longterm.status()
     writes it whenever the table changes, so it's never a stale label."""
@@ -362,11 +374,21 @@ def _status_lines():
     # Voice = how you talk to her (the recording mode); TTS = how she
     # talks back, which voice and where it's synthesized. The TTS voice
     # and its server are one fact, not two.
+    # Mood rides on the Status row rather than taking one of its own.
+    # Two reasons: this window is exactly five lines, so a sixth row
+    # pushes Model off the bottom - and mood belongs with "what state
+    # is she in", not wedged between storage and the speech server.
+    status = [
+        ("class:ok" if state["status"] == "Idle" else "class:value",
+         state["status"]),
+    ]
+
+    if state["mood"]:
+        status.append(("class:dim", " \u00b7 "))
+        status.append(("class:agent", state["mood"]))
+
     rows = [
-        ("Status", [
-            ("class:ok" if state["status"] == "Idle" else "class:value",
-             state["status"]),
-        ]),
+        ("Status", status),
         ("Voice", [("class:value", state["mode"])]),
         ("Memory", [("class:value", state["memory"])]),
         ("TTS", [
@@ -587,7 +609,7 @@ class _ConversationControl(FormattedTextControl):
 # get_vertical_scroll on every render.
 # ---------------------------------------------------------------------------
 def _help_line_count():
-    return sum(text.count("\n") for _style, text in _help_fragments())
+    return _rendered_lines(_help_fragments())
 
 
 def _help_height():
@@ -671,22 +693,112 @@ def _next_pane():
     return _panes[(_panes.index(_pane) + 1) % len(_panes)]
 
 
-def _tool_rows():
+# What the next Tab will do, on the input frame. Tab used to open one
+# thing, so a fixed "tab for help" was honest; now it cycles, and a
+# label that names the next stop beats making you remember the ring.
+_TAB_HINT = {None: "tab for help", "help": "tab for tools",
+             "tools": "tab to close"}
+
+
+def _tab_hint():
+    return _TAB_HINT.get(_pane, "tab for help")
+
+
+# Things that aren't tools but are worth switching from the same place.
+# Each is (label, config key, dotted setting, note) - the pane shows
+# what it costs and flips it through /set's own machinery, so the
+# change is saved exactly as if you'd typed it.
+_FEATURES = (
+    ("mood", "MOOD_ENABLED", "mood.enabled", ""),
+    ("mood voice", "MOOD_VOICE", "mood.voice", "tints the TTS"),
+    ("warmth sensing", "MOOD_AFFECTION", "mood.affection", "1 call/turn"),
+)
+
+
+def _feature_group():
+    """The Mood group: same shape as a tool group, so the cursor, the
+    scrolling and the line map don't need to know the difference."""
+    try:
+        import config
+        import mood
+    except Exception:
+        return None
+
+    members, live, total = [], 0, 0
+
+    for label, key, path, note in _FEATURES:
+        on = bool(getattr(config, key, False))
+        # Only the mood line itself occupies context; the other two
+        # cost a model call and nothing respectively.
+        cost = int(len(mood.line() or "") / 3.5) if path == "mood.enabled" else 0
+
+        if path == "mood.enabled" and not on:
+            cost = 81  # what it would cost switched back on
+
+        members.append((label, on, True, note, cost, path))
+        total += cost
+        live += cost if on else 0
+
+    return ("Mood", members, live, total)
+
+
+def _tool_groups():
+    """Every switchable row, tools first. Members are six-tuples: the
+    last field is a setting path for a feature, or None for a tool."""
+    groups = []
+
     try:
         import tools
 
-        return tools.inventory()
+        groups = [(label, [tuple(m) + (None,) for m in members], live, total)
+                  for label, members, live, total in tools.grouped()]
     except Exception:
-        return []
+        groups = []
+
+    features = _feature_group()
+
+    return groups + [features] if features else groups
 
 
-def _tool_fragments():
-    rows = _tool_rows()
-    fragments = [("", "\n")]
+def _tool_rows():
+    """Every tool, flat, in the order the pane draws them - this is what
+    the cursor indexes. Group headers are drawn between them but can't
+    be selected, so the two orderings must be derived from one source."""
+    return [row for _label, members, _live, _total in _tool_groups()
+            for row in members]
 
-    if not rows:
-        return fragments + [("class:footer", "  no tools registered\n")]
 
+def _tool_line_of(index):
+    """Which printed line a given tool sits on - headers included, so
+    scrolling can follow the selection."""
+    # The list is its own window now, so the first group header is
+    # line 0 and nothing sits above it.
+    line = 0
+    seen = 0
+
+    for position, (_label, members, _live, _total) in enumerate(_tool_groups()):
+        if position:
+            line += 1  # the blank separating this group from the last
+
+        line += 1  # the group header
+
+        for _row in members:
+            if seen == index:
+                return line
+
+            seen += 1
+            line += 1
+
+    return line
+
+
+def _tool_header():
+    """The budget, pinned above the list.
+
+    It used to be the first lines of the scrolling area, which meant
+    selecting the top tool scrolled it off and nothing could bring it
+    back - the one number the pane exists to show, unreachable.
+    """
     try:
         import tools
         import lmstudio
@@ -697,49 +809,103 @@ def _tool_fragments():
         live = possible = window = 0
 
     saved = possible - live
-    header = f" {live} tokens of tool schemas in every prompt"
+    line = f" {live} tokens of tool schemas in every prompt"
+
+    try:
+        import mood
+
+        extra = int(len(mood.line() or "") / 3.5)
+    except Exception:
+        extra = 0
+
+    if extra:
+        line = f" {live + extra} tokens of tools and mood in every prompt"
 
     if saved:
-        header += f" ({saved} saved)"
+        line += f" ({saved} saved)"
 
     if window:
-        header += f", of a {window}-token context"
+        line += f", of a {window}-token context"
 
-    fragments.append(("class:label bold", header + "\n"))
-    fragments.append(("class:footer",
-                      " (space) toggle  (up/down) choose  (Tab) back\n\n"))
+    return [
+        ("class:label bold", line + "\n"),
+        ("class:footer", " (space) toggle  (up/down or wheel) choose"),
+    ]
 
-    for index, (name, on, ready, why, cost) in enumerate(rows):
-        selected = index == _tool_cursor
-        pointer = " >" if selected else "  "
 
-        if not ready:
-            mark, mark_style = "--", "class:dim"
-        elif on:
-            mark, mark_style = "on", "class:ok"
-        else:
-            mark, mark_style = "off", "class:warn"
+def _tool_fragments():
+    fragments = []
 
-        name_style = "class:agent" if (on and ready) else "class:dim"
+    if not _tool_rows():
+        return [("class:footer", "  no tools registered\n")]
 
-        if selected:
-            name_style += " bold"
+    index = 0
+    groups = _tool_groups()
 
-        fragments.append(("class:key" if selected else "class:dim", pointer))
-        fragments.append((mark_style, f" {mark} "))
-        fragments.append((name_style, f"{name:<16}"))
-        fragments.append(("class:footer", f"{cost:>5} tok"))
+    for position, (label, members, group_live, group_total) in enumerate(groups):
+        # A blank line separates groups. Only between them: a trailing
+        # one is a line the view can never scroll onto, which leaves
+        # the scrollbar stranded a notch short of the bottom.
+        if position:
+            fragments.append(("", "\n"))
 
-        if not ready:
-            fragments.append(("class:dim", f"   {why}"))
+        # The subtotal is the point of grouping: it turns "which of
+        # these 22 do I not need" into "do I need the desktop ones".
+        spent = f"{group_live} tok" if group_live == group_total \
+            else f"{group_live} of {group_total} tok"
+        fragments.append(("class:label bold", f" {label}"))
+        fragments.append(("class:dim", f"   {spent}\n"))
 
-        fragments.append(("", "\n"))
+        for name, on, ready, why, cost, setting in members:
+            selected = index == _tool_cursor
+            pointer = " >" if selected else "  "
+
+            if not ready:
+                mark, mark_style = "--", "class:dim"
+            elif on:
+                mark, mark_style = "on", "class:ok"
+            else:
+                mark, mark_style = "off", "class:warn"
+
+            name_style = "class:agent" if (on and ready) else "class:dim"
+
+            if selected:
+                name_style += " bold"
+
+            fragments.append(("class:key" if selected else "class:dim", pointer))
+            fragments.append((mark_style, f" {mark} "))
+            fragments.append((name_style, f"{name:<16}"))
+            fragments.append(("class:footer", f"{cost:>5} tok"))
+
+            if why:
+                fragments.append(("class:dim", f"   {why}"))
+
+            fragments.append(("", "\n"))
+            index += 1
+
+    # No newline after the final row: it would open one more line than
+    # the list has, and the scrollbar would stop a notch short of the
+    # bottom for ever.
+    if fragments and fragments[-1][1].endswith("\n"):
+        style, text = fragments[-1]
+        fragments[-1] = (style, text[:-1])
 
     return fragments
 
 
+def _rendered_lines(fragments):
+    """How tall prompt_toolkit thinks this content is.
+
+    Counting newlines ourselves is off by one whenever the last line
+    ends in a newline - it opens a further line that nothing can scroll
+    to, and the scrollbar sizes itself off the library's count rather
+    than ours. Asking the library is the only way the two agree.
+    """
+    return len(list(split_lines(fragments)))
+
+
 def _tool_line_count():
-    return sum(text.count("\n") for _style, text in _tool_fragments())
+    return _rendered_lines(_tool_fragments())
 
 
 def _tool_height():
@@ -760,12 +926,13 @@ def _tool_move(step):
 
     _tool_cursor = max(0, min(_tool_cursor + step, rows - 1))
 
-    # Three header lines sit above the first row.
-    line = _tool_cursor + 3
+    line = _tool_line_of(_tool_cursor)
     height = _tool_height()
 
-    if line < _tool_scroll:
-        _tool_scroll = line
+    # One line of slack, so arrowing up onto the first tool of a group
+    # brings its heading into view rather than stopping flush under it.
+    if line - 1 < _tool_scroll:
+        _tool_scroll = max(0, line - 1)
     elif line >= _tool_scroll + height:
         _tool_scroll = line - height + 1
 
@@ -779,7 +946,7 @@ def _tool_toggle():
     if not 0 <= _tool_cursor < len(rows):
         return
 
-    name, on, ready, why, _cost = rows[_tool_cursor]
+    name, on, ready, why, _cost, setting = rows[_tool_cursor]
 
     if not ready:
         add_message("system", f"{name} can't be switched on - {why}")
@@ -787,9 +954,20 @@ def _tool_toggle():
         return
 
     try:
-        import tools
+        if setting:
+            import config
 
-        tools.set_enabled(name, not on)
+            config.save_setting(setting, "false" if on else "true")
+
+            # The mood line leaves the prompt with it, and the header
+            # row goes with it too.
+            import mood
+
+            mood._announce()
+        else:
+            import tools
+
+            tools.set_enabled(name, not on)
     except Exception as e:
         add_message("system", f"Couldn't change {name}: {e}")
 
@@ -797,13 +975,44 @@ def _tool_toggle():
 
 
 def _tool_scroll_by(lines):
+    """Move the view. The selection comes along only as far as it must.
+
+    Letting the cursor drift off-screen would mean (space) toggling a
+    tool you can't see, which is the kind of surprise a pane about
+    switching things off should not have.
+    """
     global _tool_scroll
 
     _tool_scroll = max(0, min(
         _tool_scroll + lines,
         max(0, _tool_line_count() - _tool_height()),
     ))
+    _keep_cursor_visible()
     _refresh()
+
+
+def _keep_cursor_visible():
+    global _tool_cursor
+
+    rows = len(_tool_rows())
+
+    if not rows:
+        return
+
+    top, bottom = _tool_scroll, _tool_scroll + _tool_height() - 1
+    line = _tool_line_of(_tool_cursor)
+
+    if line < top:
+        # Walk down to the first tool actually in view.
+        for index in range(_tool_cursor, rows):
+            if _tool_line_of(index) >= top:
+                _tool_cursor = index
+                return
+    elif line > bottom:
+        for index in range(_tool_cursor, -1, -1):
+            if _tool_line_of(index) <= bottom:
+                _tool_cursor = index
+                return
 
 
 def _tool_scroll_position(window):
@@ -815,13 +1024,23 @@ def _tool_cursor_point():
 
 
 class _ToolControl(FormattedTextControl):
+    """One notch, one option.
+
+    The conversation and the help are documents, where three lines a
+    notch is the right feel. This is a menu of 22 switches, and there
+    three at a time means overshooting whatever you were aiming at. So
+    the wheel steps the selection rather than nudging the view, which
+    also makes it do the same thing as the arrow keys instead of
+    something subtly different.
+    """
+
     def mouse_handler(self, mouse_event):
         if mouse_event.event_type == MouseEventType.SCROLL_UP:
-            _tool_scroll_by(-WHEEL_LINES)
+            _tool_move(-1)
             return None
 
         if mouse_event.event_type == MouseEventType.SCROLL_DOWN:
-            _tool_scroll_by(WHEEL_LINES)
+            _tool_move(1)
             return None
 
         return super().mouse_handler(mouse_event)
@@ -1096,6 +1315,17 @@ _HELP_SECTIONS = [
         "repeats until dismissed - louder and less charming each round.",
         "one due while the app was closed is skipped, not rung at noon.",
     ]),
+    ("Mood", [
+        ("/mood", "how she's feeling, both dials, and what moved it"),
+        ("/mood reset", "back to baseline for the hour"),
+        "shown on the Status row - 'Idle - drowsy', and it tints her",
+        "voice a few percent. Survives a restart, faded by how long you",
+        "were gone. She drifts with the",
+        "clock, how long you've been at it, errors",
+        "being talked over, and whether you're kind to her - tone only,",
+        "never how much she helps.",
+        "/set mood.enabled false turns it off.",
+    ]),
     ("Memory", [
         ("/facts", "what she remembers, and which backend holds it"),
         ("/facts all", "the whole table, not just the newest"),
@@ -1138,6 +1368,13 @@ _HELP_SECTIONS = [
         ("/look", "list windows, or test a screenshot"),
         ("/log", "tail the debug log without leaving the app"),
         ("/context", "how big every prompt is vs the model's context"),
+        ("/scroll", "why the wheel isn't scrolling, if it isn't"),
+        "",
+        "in the tools pane: up/down or the wheel choose, space toggles.",
+        "the Mood group at the bottom switches moods, her voice tint",
+        "and warmth sensing from the same place.",
+        "the pane grabs the mouse while it's open so one notch is one",
+        "option - F2 and text selection go back to normal on the way out.",
         ("/mouse", "same as F2, and saves the choice"),
         ("/set", "alone lists every setting with its value; /set a.b x"),
         "                changes one, saved to config.json, most apply live.",
@@ -1508,7 +1745,7 @@ def run(on_submit, on_hotkey=None):
 
     _help_window = help_window
 
-    tools_window = Window(
+    tools_list = Window(
         content=_ToolControl(
             _tool_fragments,
             get_cursor_position=_tool_cursor_point,
@@ -1520,7 +1757,16 @@ def run(on_submit, on_hotkey=None):
         right_margins=[ScrollbarMargin()],
     )
 
-    _tool_window = tools_window
+    _tool_window = tools_list
+
+    tools_window = HSplit([
+        Window(
+            content=FormattedTextControl(_tool_header),
+            height=Dimension.exact(2),
+        ),
+        _rule(_HORIZONTAL),
+        tools_list,
+    ])
 
     # Help replaces the conversation panel rather than floating over it.
     # A float has to be full width anyway - a 2-cell emoji whose first
@@ -1547,10 +1793,10 @@ def run(on_submit, on_hotkey=None):
             filter=showing_help,
         ),
         ConditionalContainer(
-            _framed(tools_window, title="Tools - Tab again to close"),
+            _framed(tools_window, title="Tools"),
             filter=Condition(lambda: _pane == "tools"),
         ),
-        _framed(input_area, title="tab for help"),
+        _framed(input_area, title=_tab_hint),
     ])
 
     # The permission popup floats over everything, centred, most of the
@@ -1610,7 +1856,15 @@ def run(on_submit, on_hotkey=None):
         style=_build_style(),
         full_screen=True,
         # A filter, not a flag, so it can be toggled without a restart.
-        mouse_support=Condition(lambda: _mouse),
+        #
+        # The tools pane turns capture on for as long as it's open,
+        # whatever F2 says. Capture costs you terminal text selection,
+        # which is why it's off by default - but there is nothing to
+        # select in a menu, and without it the terminal converts each
+        # wheel notch into three arrow keys and the selection jumps
+        # three switches at a time. Derived rather than saved and
+        # restored, so it can't get stuck on.
+        mouse_support=Condition(lambda: _mouse or _pane == "tools"),
     )
 
     # First paint has no render_info, so the scroll lands at line one and

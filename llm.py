@@ -11,6 +11,7 @@ from config import memory
 import history
 import lmstudio
 import logbook
+import mood
 import longterm
 import reminders
 import timeutil
@@ -112,7 +113,7 @@ time_until instead.
 
 Personality:
 {PERSONALITY}
-
+{mood.line()}
 Tone:
 {TONE}
 

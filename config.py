@@ -332,6 +332,28 @@ DESKTOP_ENABLED = bool(_desktop_cfg.get("enabled", True))
 # tools.set_enabled writes it back.
 TOOLS_DISABLED = list(setting("tools", {}).get("disabled", []))
 
+# How she happens to be feeling - see mood.py. Colours tone only, from
+# free signals (clock, session length, errors, barge-ins), never a
+# model call.
+#   "mood": { "enabled": true, "warmth": 0.4, "recovery": 0.25 }
+_mood_cfg = setting("mood", {})
+MOOD_ENABLED = bool(_mood_cfg.get("enabled", True))
+# Where warmth settles when nothing is pushing it - the resting state
+# she drifts back to.
+# 0.45 rather than 0.40: the label bands break at 0.35, and resting a
+# hair above an edge made the header flicker between two moods.
+MOOD_WARMTH = float(_mood_cfg.get("warmth", 0.45))
+# How hard each turn pulls both dials home. 0 = moods never fade,
+# 1 = nothing persists past a single turn.
+MOOD_RECOVERY = float(_mood_cfg.get("recovery", 0.25))
+# Whether the mood also tints the voice - a drowsy Luna a few percent
+# slower and lower. Small by design; see mood.voice_tint.
+MOOD_VOICE = bool(_mood_cfg.get("voice", True))
+# Whether being kind to her registers. It's the one mood signal that
+# costs a model call - a small one, on a worker, after the turn - so
+# it's the one worth being able to switch off.
+MOOD_AFFECTION = bool(_mood_cfg.get("affection", True))
+
 _files_cfg = setting("files", {})
 FILES_ENABLED = bool(_files_cfg.get("enabled", True))
 FILES_APPROVAL_TIMEOUT = float(_files_cfg.get("approval_timeout", 120))
@@ -538,6 +560,12 @@ SETTINGS = {
 
     "desktop.enabled":            ("DESKTOP_ENABLED",              True),
     "desktop.clipboard":          ("DESKTOP_CLIPBOARD",            True),
+
+    "mood.enabled":               ("MOOD_ENABLED",                 True),
+    "mood.warmth":                ("MOOD_WARMTH",                  True),
+    "mood.recovery":              ("MOOD_RECOVERY",                True),
+    "mood.voice":                 ("MOOD_VOICE",                   True),
+    "mood.affection":             ("MOOD_AFFECTION",               True),
 
     "files.enabled":              ("FILES_ENABLED",                True),
     "files.approval_timeout":     ("FILES_APPROVAL_TIMEOUT",       True),

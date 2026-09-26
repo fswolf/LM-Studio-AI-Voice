@@ -8,6 +8,7 @@ history/conversation.json
 history/transcript.jsonl
 reminders/reminders.json
 agent/facts.db
+agent/mood.json
 agent/facts.db-wal
 agent/facts.db-shm
 
@@ -18,14 +19,14 @@ Claude outputs/
 ai-voice-venv/
 .venv/
 venv/
-server-*/venv/
-server-*/qwentts.cpp/
-server-*/models/
+tts/*/venv/
+tts/*/qwentts.cpp/
+tts/*/models/
 *.gguf
 
 # Reference voice clips are recordings, not source.
-server-*/voices/*
-!server-*/voices/README.md
+tts/*/voices/*
+!tts/*/voices/README.md
 
 # Plugins are private by default: anything you drop in plugins/ is
 # yours - channel names, account names, whatever you wire her up to -

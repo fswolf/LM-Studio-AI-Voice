@@ -16,6 +16,7 @@ import control
 import history
 import lmstudio
 import logbook
+import mood
 import plugins
 import ptt
 import reminders
@@ -114,6 +115,10 @@ ui.init(
 import longterm
 ui.set_memory(longterm.status())
 
+# Opening mood comes from the clock - 6am and 9pm are not the same
+# person. Everything after this is drift off that.
+mood.start()
+
 # Seed the on-screen conversation with what was loaded from disk, so
 # past turns are visible right away instead of starting on a blank screen.
 for msg in history.get_messages():
@@ -176,6 +181,7 @@ def _process(text):
     try:
         assistant.respond(text, MODEL)
         ui.set_status("Idle")
+        mood.note_turn()
     except Exception as e:
         # Without this, an LM Studio error (context overflow, bad param,
         # connection drop, etc.) would kill the worker silently instead
@@ -183,6 +189,7 @@ def _process(text):
         logbook.exception("turn", "typed turn failed")
         ui.add_message("system", f"Error: {e}")
         ui.set_status("Idle")
+        mood.note_error()
     finally:
         state.assistant_busy = False
 
@@ -808,6 +815,47 @@ def handle_input(text):
             "system",
             f"Roughly what every turn sends (tokens):\n{rows}\n{verdict}{warning}",
         )
+        return
+
+    if text.startswith("/mood"):
+        argument = text[5:].strip().lower()
+
+        if argument == "reset":
+            mood.reset()
+            ui.add_message("system", f"Mood reset - she's {mood.label()}.")
+            return
+
+        if not config.MOOD_ENABLED:
+            ui.add_message(
+                "system",
+                "Moods are off - /set mood.enabled true switches them on.",
+            )
+            return
+
+        name, energy, warmth, why = mood.state()
+        energy_word, warmth_word = mood.bands()
+        lines = [
+            f"She's {name}  "
+            f"(energy {energy:+.2f} {energy_word}, "
+            f"warmth {warmth:+.2f} {warmth_word})",
+        ]
+
+        if why:
+            lines.append("Lately: " + "; ".join(why))
+
+        if config.MOOD_AFFECTION:
+            rating = mood.last_rating()
+            lines.append(
+                "Warmth sensing: last message rated "
+                + (f"{rating}/3" if rating is not None
+                   else "nothing yet this session")
+            )
+
+        lines.append(
+            "Drifts back on its own - /mood reset to force it, "
+            "/set mood.recovery to change how fast."
+        )
+        ui.add_message("system", "\n".join(lines))
         return
 
     if text == "/scroll":

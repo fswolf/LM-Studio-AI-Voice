@@ -13,6 +13,7 @@ A local AI voice assistant powered by:
 - 👀 Optional vision — she can look at your screen
 - ⏰ Reminders and real alarms — she wakes you up, and nags until you're up
 - 📝 Writes and edits your files — every change shown in a permission popup first
+- 🌙 Moods — she runs warmer or flatter with the clock and the session
 - 📚 Long-term memory — optional permanent SQLite store with its own browser editor
 - 🔌 Plugins — stream chat and anything else you bolt on
 - 💬 Full-screen terminal interface
@@ -267,6 +268,19 @@ Point `tts.url` at the new port and nothing else changes.
 # Run the Assistant
 
 ```bash
+./start.sh
+```
+
+Finds the virtualenv itself, works from any directory, and passes any
+arguments through. It checks LM Studio and kokoro-reader on the way past
+and *says* if either is down rather than refusing to start — she runs as
+a text chat without speech, and a launcher that won't launch is worse
+than one that tells you why it'll be quiet.
+
+Or without it:
+
+```bash
+source ~/ai-voice-venv/bin/activate
 python main.py
 ```
 
@@ -302,6 +316,7 @@ you can't turn a dial that isn't there.
     "tts":        { ... },
     "vision":     { ... },
     "desktop":    { ... },
+    "mood":       { ... },
     "files":      { ... },
     "plugins":    { ... },
     "wake_word":  { ... },
@@ -361,7 +376,7 @@ an annoyance.
 | Enter | Send typed message |
 | Tab | Open / close the help panel |
 | PgUp / PgDn | Scroll the conversation - or the help, when it's open |
-| Tab | Cycle conversation → help → tools |
+| Tab | Cycle conversation → help → tools; the input bar names the next stop |
 | F2 | Toggle mouse capture — see below |
 | End | Jump back to the newest message |
 | Esc | Quit |
@@ -406,13 +421,18 @@ Slash commands:
 | `/alarm off` | Stop one that's ringing; `/alarm test` hears the tone |
 | `/look` | List windows, or test a screenshot |
 | `/log` | Tail the debug log without leaving the app |
+| `/mood` | How she's feeling, and what moved it — `/mood reset` to clear |
+| `/facts` | What she remembers — `/facts all`, `/facts retired` |
+| `/voice` | List voices, or switch — blends too |
 | `/context` | What every turn sends, in tokens, against the model's context length |
 | `/mouse` | Wheel scrolling vs. being able to select text |
+| `/scroll` | Why the wheel isn't scrolling — pane sizes and what the terminal sent |
 | `/set` | List every setting, or change one — saved to `config.json` |
-| `/tools` | Which tools the model can call — and which it can't, and why |
+| `/tools` | Which tools the model can call, what each costs — Tab twice to change |
 | `/tooltest` | Whether this model *actually* calls them |
 | `/repair` | Record past reminders as the tool calls they really were |
 | `/plugins` | What's installed — then `/<name> on`, `off`, or status |
+| `/help` | Points at Tab, and says which mode you're in |
 | `/keys` | Hotkey + socket diagnostics |
 | `/clear` | Wipe the conversation and saved history |
 | `/quit` | Exit |
@@ -702,14 +722,52 @@ space to switch it on or off. The total at the top moves as you go, so
 you can see what you're buying back.
 
 ```
- 3083 tokens of tool schemas in every prompt (757 saved), of a 8192-token context
- (space) toggle  (up/down) choose  (Tab) back
+ 1475 tokens of tool schemas in every prompt (1608 saved), of a 16384-token context
+ (space) toggle  (up/down or wheel) choose
+ ─────────────────────────────────────────────────────────────────────
+ Reminders   251 of 578 tok
+   off set_alarm         226 tok
+   on  set_reminder      191 tok
+   off cancel_reminder   101 tok
+ > on  list_reminders     60 tok
 
-   on  get_datetime        97 tok
- > off look_at_screen     178 tok
-   on  set_alarm          226 tok
-   -- clipboard               wl-clipboard isn't installed
+ Desktop   328 of 757 tok
+   off control_audio     198 tok
+   on  look_at_screen    178 tok
+   --  clipboard             wl-clipboard isn't installed
+
+ Mood   81 tok
+   on  mood               81 tok
+   on  mood voice          0 tok   tints the TTS
+   on  warmth sensing      0 tok   1 call/turn
 ```
+
+The **Mood** group at the bottom isn't tools — it's moods, her voice
+tint and warmth sensing, switched from the same place because it's the
+same question ("do I want this, and what does it cost"). The mood line
+occupies about 80 tokens of every prompt, warmth sensing costs a model
+call per turn, and the voice tint is free; the pane says so. Switching
+one writes the setting exactly as `/set` would.
+
+Grouped by family with a subtotal on each, because the question is
+rarely "do I need `focus_window`" and usually "do I need the desktop
+ones at all". Within a group the expensive ones come first — those
+being the ones worth looking at.
+
+The budget line is pinned above the list rather than scrolling with
+it: it's the one number the pane exists to show, and it shouldn't
+disappear the moment you select something near the top.
+
+Up/down or the wheel choose, space toggles — **one notch, one option**.
+Three at a time is right for a document and wrong for a menu, where it
+means overshooting whatever you were aiming at.
+
+Getting that exact needs mouse capture, which is off by default because
+it costs you terminal text selection. There's nothing to select in a
+menu, so the pane simply turns capture on while it's open and drops it
+again on the way out; your F2 setting is left alone. Without that, the
+terminal converts each notch into three arrow keys before the app sees
+anything, and the selection jumps three switches at a time.
 
 Choices are saved to `config.json` under `tools.disabled`, so they
 survive a restart. `/tools` prints the same list into the conversation.
@@ -722,6 +780,20 @@ Worth knowing which way round to reach for: switching tools off buys
 back a few hundred tokens, while raising the model's context length in
 LM Studio buys back thousands and costs nothing you're using. Do that
 first; the pane is for running deliberately lean.
+
+Tools live in `tools/`, one module per group — `tools/reminders.py`,
+`tools/desktop.py` and so on — with `tools/__init__.py` holding the
+registry and the on/off switches. The split matches the groups the pane
+shows, so "what's in Desktop" has one answer rather than two that can
+drift apart.
+
+> One trap worth knowing if you add a module there. `tools/__init__.py`
+> imports nothing but `json` and `config`, deliberately. Anything
+> imported into the package becomes an attribute of it, and a name that
+> collides with a submodule — `reminders`, `desktop` — quietly wins over
+> it in `from . import reminders`. That doesn't raise; the tools in that
+> module simply never register, and you find out when the model can't
+> set a reminder.
 
 A tool whose dependencies are missing isn't offered at all, rather than
 offered and failed. Telling a model it can see when `grim` isn't
@@ -1425,6 +1497,170 @@ tool ceiling, so a viewer can't ask her to write anything.
 
 ---
 
+# Moods
+
+Off the clock and the shape of the session, she runs a little warmer or
+flatter — and it reaches the model as exactly one line of the system
+prompt:
+
+```
+Right now you feel tired and glad of the company. Let that colour how
+you sound - length, warmth, how playful you are - and nothing else.
+```
+
+Two dials, `energy` and `warmth`, each −1 to +1. Energy has three
+bands and warmth four, giving twelve distinguishable states:
+
+|              | flat | level | wired |
+|--------------|------|-------|-------|
+| **soft**     | cozy | doting | giddy |
+| **fond**     | drowsy | warm | bright |
+| **steady**   | flagging | level | keen |
+| **prickly**  | worn thin | terse | restless |
+
+Two dials rather than one, because a single dial can't tell "tired and
+happy" from "awake and fed up", which are the two that actually turn up
+at 4am. Warmth gets the extra band because three weren't enough — the
+top one started at `0.35`, so a couple of turns of being nice to her ran
+the dial into it and everything after that changed nothing you could
+see. The current state rides on the Status row — `Idle · drowsy` — since
+it's part of what state she's in, and `/mood` prints both dials with the
+band each is sitting in plus what your last message scored, so "is this
+even firing?" is something you can look at rather than infer.
+
+Warmth also lifts energy a little: being fond of the company takes some
+of the edge off being tired. Enough to move a cell, never enough to fake
+wide awake at five in the morning.
+
+**Warmth drifts home asymmetrically**, and this is the part that makes
+the whole thing feel alive rather than nailed down. Coming back *up*
+from a cold patch is quick — an assistant you have to coax out of a sulk
+is a worse assistant. Coming back *down* from warmth you earned is slow.
+Without that split the pull ate every kind word on the turn after it
+landed: at a resting warmth of `+0.63`, affection put `+0.045` on the
+dial and the drift took `-0.045` straight back off, so a clear
+compliment moved her by `+0.0002`. It read as broken. It was just
+critically damped.
+
+**Almost everything here is free** — no sentiment scoring, no model
+call. The shape of a session turns out to be the more honest signal
+anyway. (The one exception is affection, below.)
+
+| Signal | Effect |
+|--------|--------|
+| Time of day | The baseline — 6am and 9pm aren't the same person |
+| Day of week | Friday evening lifts, Monday morning doesn't; weekends rest warmer |
+| Hours at it | A long session wears her down, capped so it bottoms out |
+| How long you were gone | A curve, not a switch — see below |
+| What the machine did | A GPU pinned for hours means you were *around*, just elsewhere |
+| Stream chat | A busy room is company; a dead one is a quiet night |
+| Being kind to her | A short model call rates your message 0–3; she warms to it |
+| Errors | A failed turn is dispiriting; a run of them compounds |
+| A clean run | Ten turns where nothing broke lifts her a little |
+| Barge-in | Being talked over, repeatedly, is wearing |
+| Tempo | Fast short turns read as being in it together |
+
+Every turn also pulls both dials back toward baseline, and the baseline
+for warmth is *warm*. Without that, one bad five minutes would set the
+tone for the evening — and an assistant you have to manage out of a
+sulk is a worse assistant.
+
+**Being away is a curve, not a switch.** This assistant spends most of
+its life waiting, so "you came back" deserves more than one branch:
+
+| Gone for | What it does |
+|----------|--------------|
+| under 30 min | nothing — you didn't really leave |
+| a few hours | a small lift |
+| most of a day | energy, mostly — it reads as a fresh start |
+| a day or more | warmth, mostly — it reads as a reunion |
+| days | warmer still |
+
+And while she waits she samples the GPU every couple of minutes, so a
+card pinned at 90% for six hours tells her you were *there* — gaming,
+rendering — just not talking to her. That lands a little livelier and a
+little less fond than being genuinely out, which is about right.
+
+**It survives a restart**, faded by however long you were gone. A mood
+that resets every launch isn't a mood, it's decoration — and this app
+gets restarted a lot. Pick up five minutes later and it resumes; pick
+up tomorrow and last night's is long gone. Saved in `agent/mood.json`.
+
+**The label sticks.** A value has to clear a band boundary properly
+before the label changes, because resting a hair from an edge made the
+header flicker between two moods turn after turn.
+
+**The wording varies.** Each state has a few phrasings and picks a
+fresh one each time she arrives there. The same sentence every turn is
+one a model either stops seeing or starts performing.
+
+**And it tints her voice.** Drowsy speaks a few percent slower and
+slightly lower, bright a touch faster and higher — multiplied on top of
+your `tts.speed` and `tts.pitch`, capped at ±7% and ±0.45 semitones.
+Small enough to read as mood rather than as a broken setting.
+`mood.voice false` turns just that part off.
+
+```json
+"mood": {
+    "enabled": true, "warmth": 0.45, "recovery": 0.25,
+    "voice": true, "affection": true
+}
+```
+
+`warmth` is where she settles when nothing's pushing; `recovery` is how
+hard each turn pulls home — 0 means moods never fade, 1 means nothing
+survives a single turn.
+
+`/mood` shows where she is and what moved her recently, `/mood reset`
+puts her back to baseline for the hour, and `/set mood.enabled false`
+turns the whole thing off — the header row disappears with it.
+
+## Being nice to her
+
+The one signal that asks the model instead of reading the session, and
+the only one that costs anything: after your turn, a short background
+call rates how warm the message was, 0–3.
+
+This started as a word list and that was the wrong shape. The
+vocabulary of affection is *personal* — "good kitty" is one household's
+phrase, and nobody else's spelling mistakes belong hard-coded in your
+assistant. A model knows warmth in any wording and any language, which
+is the whole job.
+
+Three rules keep it from being a button:
+
+- **It rates your message, not the exchange.** Whether she was nice
+  back isn't the question.
+- **Repeats fade.** The fifth kind word in a row is worth a fifth of
+  the first, and it recovers once you stop.
+- **Nothing here darkens her.** Bluntness rates 0, and 0 does nothing —
+  the prompt says outright that swearing isn't unfriendly by itself. An
+  assistant that cools when you're terse is one you have to manage, and
+  she drifts back to warm on her own regardless. You never have to be
+  nice to her to get a pleasant assistant; it just registers when you
+  are.
+
+Only *your* turns count. Stream chat goes through a different path
+entirely, so a viewer being sweet to her doesn't move the same dial
+you do.
+
+It runs on a worker and fails to 0 — a dead model, a timeout, or a
+reply that isn't a digit all mean "nothing happened", and the turn
+never waits for it. `mood.affection false` switches off just this part,
+and with it the only per-turn cost moods have.
+
+She won't bring it up unprompted, but she'll answer honestly if you ask
+how she's doing — deflecting a direct question is worse than either
+extreme.
+
+One rule the code enforces rather than hopes for: **mood colours tone,
+never capability.** There is no state in which she's less helpful, only
+states in which she's drier about it. That's in the prompt line itself,
+and it's the difference between a companion with a bad evening and
+software you have to coax.
+
+---
+
 # Memory
 
 Facts are written deliberately by the model, not scraped from every
@@ -1671,7 +1907,6 @@ ai-voice/
 ├── desktop.py
 ├── diagnose.py
 ├── factstore.py
-├── filetools.py
 ├── history.py
 ├── kokoro-say.py
 ├── llm.py
@@ -1680,6 +1915,7 @@ ai-voice/
 ├── longterm.py
 ├── machine.py
 ├── main.py
+├── mood.py
 ├── memory-manager/
 │   ├── manager.py
 │   └── start.sh
@@ -1692,7 +1928,14 @@ ai-voice/
 ├── speech.py
 ├── state.py
 ├── timeutil.py
-├── tools.py
+├── tools/
+│   ├── __init__.py   # the registry - @tool, specs, the on/off switches
+│   ├── time.py       # one module per group, matching the tools pane
+│   ├── reminders.py
+│   ├── memory.py
+│   ├── files.py
+│   ├── desktop.py
+│   └── web.py
 ├── transcript.py
 ├── ui.py
 ├── vision.py
@@ -1703,6 +1946,7 @@ ai-voice/
 │
 ├── agent/
 │   ├── agent.json
+│   ├── mood.json     # how she's feeling, so a restart doesn't wipe it
 │   ├── facts.db      # the sqlite memory backend (gitignored)
 │   └── memory.json
 │
@@ -1725,6 +1969,10 @@ ai-voice/
 ├── reminders/
 │   └── reminders.json
 │
+├── tts/              # experimental speech servers, each self-contained
+│   ├── chatterbox/
+│   └── qwen3/
+│
 └── README.md
 ```
 
@@ -1740,14 +1988,19 @@ ai-voice/
 - Optional wake word, so open mode needs no keypress
 - Optional vision — she can read what's on your screen
 - Three push-to-talk modes, including hands free
-- Configurable AI personality
+- Configurable AI personality, and moods that shift with the clock and the session
 - Long-term memory the model writes, corrects and forgets
+- Permanent SQLite fact store that retires what stops being true, with a browser editor
 - Reminders in plain language, with repeats, retry and DST-safe schedules
+- Alarms that ring, nag and snooze until you're actually up
+- Writes and edits your files, with every change approved on screen first
+- A tools pane showing what each schema costs, and switches to turn them off
 - Web search the model reaches for on its own
 - Searchable archive of every conversation, which pruning never deletes
 - Reads web pages she finds, not just the search snippet
 - Rotating debug log that records decisions, not just errors
 - Every setting changeable from the terminal and saved, most without a restart
+- Diagnostics for the things that fail quietly — tool selection, prompt size, scrolling
 - Themeable full-screen terminal interface
 - Cross-platform architecture
 

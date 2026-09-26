@@ -28,7 +28,8 @@ import stat
 import config
 import logbook
 import state
-import tools
+
+from . import tool
 
 HOME = os.path.expanduser("~")
 
@@ -115,6 +116,15 @@ def _is_text(data):
 # ---------------------------------------------------------------------------
 # Approval - the popup lives in ui.py; this is the request shape
 # ---------------------------------------------------------------------------
+def _note_denied():
+    try:
+        import mood
+
+        mood.note_denied()
+    except Exception:
+        pass
+
+
 def _ask(action, full, body_lines, note=""):
     """Block until the user answers the popup. False on timeout or when
     there's no TUI to ask (headless = deny; never write unasked)."""
@@ -159,7 +169,7 @@ def _why():
     return "files.enabled is false"
 
 
-@tools.tool(
+@tool(
     "list_files",
     "List what's in a folder under the user's home - names, with a / "
     "after folders. Use it before writing somewhere you haven't seen, "
@@ -205,7 +215,7 @@ def _list_files(path):
     return f"{_display(full)}:\n" + "\n".join(shown) + more
 
 
-@tools.tool(
+@tool(
     "read_file",
     "Read a text file under the user's home. Do this before editing "
     "anything, and to answer questions about a file's contents.",
@@ -251,7 +261,7 @@ def _read_file(path):
     return text if text else "(empty file)"
 
 
-@tools.tool(
+@tool(
     "write_file",
     "Create a file, or replace one, under the user's home. The user "
     "sees the full content in an approval window and must say yes "
@@ -324,6 +334,8 @@ def _write_file(path, content, executable=False):
     notes.insert(0, f"{lines} line{'s' if lines != 1 else ''}")
 
     if not _ask(action, full, body, note=", ".join(notes)):
+        _note_denied()
+
         return f"Denied by the user - {_display(full)} was not written. Do not retry."
 
     try:
@@ -345,7 +357,7 @@ def _write_file(path, content, executable=False):
            f"({lines} lines{', executable' if executable else ''})"
 
 
-@tools.tool(
+@tool(
     "edit_file",
     "Change part of an existing file: replace one exact passage with "
     "another. `find` must appear exactly once - read the file first and "
@@ -410,6 +422,8 @@ def _edit_file(path, find, replace):
     changed = sum(1 for l in body if l[:1] in "+-" and not l.startswith(("+++", "---")))
 
     if not _ask("edit", full, body, note=f"{changed} line{'s' if changed != 1 else ''} change"):
+        _note_denied()
+
         return f"Denied by the user - {_display(full)} was not changed. Do not retry."
 
     try:

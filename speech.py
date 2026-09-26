@@ -563,6 +563,28 @@ def _decode(payload):
     return np.clip(samples, -1.0, 1.0), rate
 
 
+# How she's feeling nudges how she sounds - a few percent, on top of
+# whatever tts.speed and tts.pitch are set to. Imported lazily and
+# wrapped: mood is decoration, and nothing here may be the reason she
+# stops speaking.
+def _mood_speed():
+    try:
+        import mood
+
+        return mood.voice_tint()[0]
+    except Exception:
+        return 1.0
+
+
+def _mood_pitch():
+    try:
+        import mood
+
+        return mood.voice_tint()[1]
+    except Exception:
+        return 0.0
+
+
 def _shift_pitch(samples, semitones):
     """Move the pitch, and the formants with it.
 
@@ -602,7 +624,7 @@ def _synthesize(text):
         response = requests.post(
             f"{TTS_URL}/tts",
             json={"text": text, "voice": config.VOICE,
-                  "speed": config.TTS_SPEED},
+                  "speed": config.TTS_SPEED * _mood_speed()},
             timeout=180,
         )
         response.raise_for_status()
@@ -617,7 +639,7 @@ def _synthesize(text):
     _set_reachable(True)
 
     samples, rate = _decode(response.content)
-    samples = _shift_pitch(samples, config.TTS_PITCH)
+    samples = _shift_pitch(samples, config.TTS_PITCH + _mood_pitch())
 
     return np.clip(samples * config.TTS_VOLUME, -1.0, 1.0), rate
 
@@ -876,6 +898,13 @@ def _watch_for_barge_in(stop):
                 )
                 state.stop_speaking = True
                 state.barged_in = True
+
+                try:
+                    import mood
+
+                    mood.note_bargein()
+                except Exception:
+                    pass  # moods are decoration; never break the audio path
                 ui.set_status("Stopped - go ahead")
                 return
     except Exception:
