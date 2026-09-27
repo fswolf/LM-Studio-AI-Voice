@@ -66,7 +66,7 @@ def busy():
 
 
 def respond_to_chat(prompt, model, source, who, said,
-                    context=None, tools_allowed=None):
+                    context=None, tools_allowed=None, speak=True):
     """A turn that came from stream chat rather than from Ryan.
 
     Same speaking path - answering out loud is the whole point on a
@@ -74,21 +74,40 @@ def respond_to_chat(prompt, model, source, who, said,
     reply short. Ryan interrupting her is him changing his mind; a
     viewer interrupting her is a stranger talking over him.
 
-    The prompt, the context and the tool list are built by pomf.py, and
-    nothing here is stored: remember=False keeps a stranger's words out
-    of history and out of the transcript.
+    speak=False makes it a silent turn: still thought about, still shown
+    on screen, just never sent to the voice. That is for a room she
+    answers in writing - IRC, where the reply is posted as text and
+    reading it aloud would mean every stranger in the channel can make
+    noise in the room he is sitting in.
+
+    The prompt, the context and the tool list are built by the plugin,
+    and nothing here is stored: remember=False keeps a stranger's words
+    out of history and out of the transcript.
     """
     with _turn:
         state.stop_speaking = False
 
-        player = speech.Player()
+        # Clear the interrupt too, and only here, holding the lock.
+        # Every other turn does this - _process for a typed one, ptt for
+        # a spoken one - and a chat turn is the one that didn't. HOME
+        # cancels the reply it was pressed during, not every reply
+        # after it; without this, one HOME press left the flag set and
+        # every stream-chat and IRC message came back empty with "you
+        # interrupted it" until Ryan happened to type something himself.
+        # Which looks exactly like the chat plugin having died.
+        state.stop_generating = False
+
+        # Not constructed at all when silent. A Player opens an output
+        # stream on the sound device; one made and never spoken to is a
+        # device handle held for the length of the turn for nothing.
+        player = speech.Player() if speak else None
 
         # What they said, not just that somebody said something. The
         # first version showed only the name, which made the one thing
         # you actually want to read - the question she is about to
         # answer on stream - the one thing that wasn't on screen.
         ui.add_message(f"chat:{source}", f"{who}: {said}")
-        ui.set_status("Chat...")
+        ui.set_status("Chat..." if speak else "Chat (silent)...")
         ui.begin_message(AGENT_NAME.lower())
 
         def on_sentence(sentence):
@@ -98,13 +117,18 @@ def respond_to_chat(prompt, model, source, who, said,
         try:
             answer = ask(
                 prompt, model,
-                on_text=ui.extend_message, on_sentence=on_sentence,
+                on_text=ui.extend_message,
+                # None is the documented "don't speak" path through
+                # ask() - the same one the reminder scanner uses.
+                on_sentence=on_sentence if speak else None,
                 context=context, tools_allowed=tools_allowed, remember=False,
             )
 
             ui.replace_message(answer)
             ui.end_message()
-            player.wait()
+
+            if player is not None:
+                player.wait()
 
             return answer
         except Exception:

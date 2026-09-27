@@ -1218,6 +1218,7 @@ it are bigger than the part of it this needs.
     "channel": "#gameranger",
     "nick": "",
     "post_replies": true,
+    "speak": false,
     "max_reply_lines": 3
 }
 ```
@@ -1225,11 +1226,29 @@ it are bigger than the part of it this needs.
 `/irc on` to join, `/irc` for status. `nick` empty means her own name,
 lowercased.
 
-**Unlike pomf, she talks back.** pomf is one-way — she reads the room
-and answers out loud. Here she also posts the answer into the channel,
-which makes her a visible bot in somebody else's room. That is what
-`max_reply_lines` and the send queue are for; set `post_replies` to
-`false` to keep her silent on the wire and audible only to you.
+**Unlike pomf, she talks back — in writing.** pomf is one-way: she reads
+the room and answers out loud. Here she posts the answer into the
+channel instead, which makes her a visible bot in somebody else's room.
+That is what `max_reply_lines` and the send queue are for.
+
+Two switches, and they're independent:
+
+| `post_replies` | `speak` | What happens |
+|---|---|---|
+| `true` | `false` | **The default.** Text in the channel, nothing from your speakers |
+| `true` | `true` | Both — she reads her answers aloud as she posts them |
+| `false` | `true` | pomf's behaviour: audible to you, invisible to the channel |
+| `false` | `false` | Refused at `/irc on`, rather than a model call per message that nobody ever hears |
+
+`speak` defaults off here and on for pomf, and the difference is who the
+room is. A stream is an audience listening to her. An IRC channel is
+people reading — and left speaking, every stranger in `#gameranger` can
+make noise in the room you're sitting in, at whatever hour they turn up.
+
+The prompt frame follows the switch. Told it's being spoken aloud when
+it's actually being typed, a model writes for the ear; the silent frame
+asks for a line or two of plain text with no markdown instead. Both
+frames keep the injection guard word for word.
 
 Being a guest in a public channel is most of the work:
 

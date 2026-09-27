@@ -26,9 +26,15 @@ channel did not ask for a paragraph.
         "channel": "#gameranger",
         "nick": "",              defaults to her name, lowercased
         "post_replies": true,    false = out loud only, never posts
+        "speak": false,          true = also read the answer out loud
         "max_reply_lines": 3,
         "ignore": ["SomeBot"]
     }
+
+`speak` is off here and on for pomf, which is the difference between
+the two rooms. A stream is an audience listening to her; an IRC channel
+is people reading. Left on, every stranger in #gameranger can make
+noise in the room he is sitting in, at whatever hour they turn up.
 
 ## NickServ, if the channel needs you registered
 
@@ -71,6 +77,7 @@ DEFAULTS = {
     "channel": "#gameranger",
     "nick": "",
     "post_replies": True,
+    "speak": False,
     "max_reply_lines": 3,
 }
 
@@ -581,8 +588,17 @@ def start(model):
         block = settings()
         channel = str(block["channel"]).strip()
         post = bool(block.get("post_replies", True))
+        speaks = bool(block.get("speak", False))
         max_lines = int(block.get("max_reply_lines", 3))
         me = nick()
+
+        # With both off she would sit in the channel thinking about
+        # every message addressed to her and telling nobody the answer -
+        # a model call per message for nothing. Refuse rather than
+        # start something whose only symptom is a warm GPU.
+        if not post and not speaks:
+            return False, ("post_replies and speak are both off - she'd "
+                           "answer into the void. Turn one on.")
 
         def reply(_who, answer):
             if post:
@@ -606,7 +622,12 @@ def start(model):
         _thread.start()
         _running = True
 
-    how = "out loud and in the channel" if post else "out loud only"
+    if post and speaks:
+        how = "in the channel and out loud"
+    elif post:
+        how = "in the channel, silently - nothing comes out of your speakers"
+    else:
+        how = "out loud only - she never posts"
 
     return True, (
         f"Joining {channel} on {block['server']} as {me}. "
@@ -662,7 +683,7 @@ def status():
         lines.append(f"  posts replies in-channel ({_posted} lines sent, "
                      f"max {block.get('max_reply_lines', 3)} per answer)")
     else:
-        lines.append("  answers out loud only - never posts")
+        lines.append("  never posts - answers out loud only")
 
     lines.extend(_room.summary())
 
