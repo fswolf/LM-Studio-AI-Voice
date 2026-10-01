@@ -1832,6 +1832,8 @@ just make something up" gets written down, a sentence before it gets
 said. Every turn from you keeps it, in `agent/thoughts.db`, for reading
 back later.
 
+<img width="1380" alt="The thought viewer - every turn down the left, the selected one laid out in full on the right, with the flags the review raised" src="assets/thought-viewer.png" />
+
 ```bash
 /thoughts                      # the viewer, in your browser
 thought-viewer/start.sh        # or: python thought-viewer/viewer.py
@@ -2177,6 +2179,7 @@ ai-voice/
 ├── assets/
 │   ├── alarm.wav
 │   ├── memory-manager.png
+│   ├── thought-viewer.png
 │   ├── ui-conversation.png
 │   └── ui-help.png
 │
