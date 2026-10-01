@@ -15,6 +15,7 @@ A local AI voice assistant powered by:
 - 📝 Writes and edits your files — every change shown in a permission popup first
 - 🌙 Moods — she runs warmer or flatter with the clock and the session
 - 📚 Long-term memory — optional permanent SQLite store with its own browser editor
+- 💭 Her reasoning, kept — the model's scratchpad per turn, with a browser viewer for reading it back
 - 🔌 Plugins — stream chat and anything else you bolt on
 - 💬 Full-screen terminal interface
 
@@ -325,7 +326,8 @@ you can't turn a dial that isn't there.
     "reminders":  { ... },
     "alarms":     { ... },
     "history":    { ... },
-    "long_term_memory": { ... }
+    "long_term_memory": { ... },
+    "thoughts":   { ... }
 }
 ```
 
@@ -1822,6 +1824,144 @@ view, which is what makes the setting safe to flip the day it misbehaves.
 If this python's sqlite lacks FTS5 the setting quietly stays on json and
 the log says why.
 
+## Her reasoning
+
+Reasoning models think before they answer, and on a local model that
+scratchpad is the most honest thing it produces — it is where "I'll
+just make something up" gets written down, a sentence before it gets
+said. Every turn from you keeps it, in `agent/thoughts.db`, for reading
+back later.
+
+```bash
+/thoughts                      # the viewer, in your browser
+thought-viewer/start.sh        # or: python thought-viewer/viewer.py
+```
+
+### Where it comes from
+
+A reasoning model's scratchpad reaches the client one of two ways, and
+which one depends on the server, not the model. With LM Studio's
+reasoning parsing on (the default) it arrives in a `reasoning_content`
+field of its own, streamed alongside the reply; with it off, or on
+another server, it is inline in the reply inside `<think>…</think>`
+tags. `llm.py` takes both: the field is accumulated delta by delta,
+and the tags are cut out of the reply text after the stream ends — the
+same cut that already keeps them off the screen and away from the
+voice, pointed at a database instead of the bin. Nothing is ever
+re-requested; the thinking is recorded as a side effect of the reply
+being generated at all.
+
+It is kept **per run of the model, not per turn**. A turn that calls a
+tool runs the model at least twice — once deciding to call it, once
+with the result in hand — and the first run is the one worth reading:
+that is where "I shouldn't guess the time, I have `get_datetime`" is
+written. Each run is stored separately and labelled with what it went
+on to do:
+
+```
+── round 1 of 2 · then called web_search({"query": "weather tonight"}) ──
+He's asking about something I can't know. I should search rather than
+make it up...
+
+── round 2 of 2 · then answered ──
+Got results. The first one answers it directly, so I'll just...
+```
+
+A think block that never closes is kept too, and flagged with why:
+`[cut off - the model ran out of tokens…]` or `[cut off - you pressed
+HOME…]`. The two look identical in the text and call for opposite
+responses, and the first is almost always the answer to "why did she
+say nothing" — when a reply comes back empty, the explanation in the
+conversation now ends with `/thoughts shows what it was thinking`.
+
+What goes in the row: the thinking, the first 300 characters of what
+you said, the first 600 of what she said, the tools she called in the
+order she called them, how many rounds it took, how long the whole turn
+took, the mood she was in, and any flags from the review below. What
+does not: tool *results* — they are looked at once, for errors, and
+dropped; that is where a file she read would land, and the files
+deny-list exists for a reason — and anything from stream chat or IRC. Those turns are
+forgotten on purpose, the same way they stay out of history. A
+reminder firing is recorded, labelled `reminder`, since what she thought
+when it went off is sometimes worth knowing.
+
+### Reading it
+
+The viewer (127.0.0.1:8791, and only 127.0.0.1) is two panes. Down
+the left, every turn, newest first, grouped by day, with one line
+pulled out of each scratchpad so a session can be skimmed without
+opening anything. On the right, whichever turn is selected, laid out
+in the order you'd ask the questions: what you said, what the thinking
+concluded, what she actually said, any flags — and then the scratchpad
+itself, verbatim, round by round. `j`/`k` or the arrows walk the list
+and the right side follows.
+That line is the end of the thinking, not the start: a think block
+opens by restating your question, which you already know, and ends
+with the decision — "So I'll call `get_datetime` and tell him plainly" —
+which you don't. It takes the last paragraph that reads as a
+conclusion, and since this model writes its scratchpad as one long
+paragraph, cuts from the front at a sentence boundary, never the back.
+
+Along the top:
+
+* **flags** — a rule-based review of every turn, run as it's
+  recorded. Not a model's opinion of itself; each one is a check you
+  can repeat by eye, and a flag means *look at this one*, never *this
+  was wrong*:
+
+  | flag | what was seen |
+  |---|---|
+  | promised a tool | the thinking names a tool she never called — "I'll set that for you", nothing scheduled |
+  | guessed | the thinking admits it doesn't know, no tool was called, and the answer doesn't say so |
+  | did date math | a date or duration worked out in the scratchpad instead of asking `get_datetime` / `time_until` |
+  | leaked | the answer reads like the scratchpad ("Okay, the user wants…") or contains a `<think` tag |
+  | tool failed | a tool result that reads as an error, shown with its first line |
+  | no answer | the "I got tangled up" fallback went out |
+  | cut off | the think block never closed |
+
+  Each flag that has fired is a chip under the search box with its
+  count; click one to see only those turns.
+* **filters** — all / used tools / voice / reminders / starred /
+  flagged, and a click on any day heading narrows to that day.
+  *Flagged* is the one to have open after a stream; the *cut off* flag
+  chip is the one for tuning `max_tokens`.
+* **★ and a note** on each turn. Star the ones worth coming back to —
+  *clear* leaves starred turns alone, and the note box under a turn is
+  the one editable thing on the page: yours, next to hers.
+* **~tokens**, from the length of the think block, against
+  `generation.max_tokens`. It turns amber past 60%, which is the
+  warning you get *before* the next long question comes back empty.
+* **the numbers** — median scratchpad length and turn time, how many
+  turns used tools, how many were cut off. The cut-off share turns
+  amber past 15% and says what to change: that is the sign that
+  `generation.reasoning` is set higher than `max_tokens` leaves room
+  for, and you otherwise only find it out one empty reply at a time.
+* **search**, across the thinking, what you said and what she said —
+  `/` focuses it, `Esc` clears it.
+* **live** — on the first page with no filter, the list refreshes
+  itself every few seconds without closing whatever you have open, so
+  it can sit on a second monitor and show what she was thinking as she
+  says it.
+* **copy as text** puts the whole trace, flags included, on the
+  clipboard for pasting into something that can tell you what went
+  wrong; **export** downloads the lot as JSON lines.
+* keys: `j`/`k` move, `s` stars, `n` jumps to the note, `/` searches,
+  `Esc` clears, `[`/`]` page.
+
+Records can be deleted (that is what a review is for) but not edited.
+What the model thought is what it thought.
+
+```json
+"thoughts": {
+    "enabled": true,
+    "max_records": 2000
+}
+```
+
+Both live: `/set thoughts.enabled false` stops recording without
+touching what is there; `max_records` trims the oldest on every insert.
+Two thousand turns of a chatty model is a few megabytes.
+
 ## Conversation history
 
 Older turns are folded into a running summary once there are more than
@@ -1998,6 +2138,10 @@ ai-voice/
 ├── mood.py
 ├── memory-manager/
 │   ├── manager.py
+│   └── start.sh
+├── thoughtlog.py     # her reasoning, per turn (agent/thoughts.db)
+├── thought-viewer/
+│   ├── viewer.py
 │   └── start.sh
 ├── plugins/
 │   ├── __init__.py   # the loader

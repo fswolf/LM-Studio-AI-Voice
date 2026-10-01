@@ -1335,6 +1335,9 @@ _HELP_SECTIONS = [
         "fact can retire the old one it contradicts. Switch live with",
         "/set long_term_memory.backend sqlite|json - loses nothing.",
         "memory-manager/start.sh opens the editor in your browser.",
+        "",
+        ("/thoughts", "her reasoning, turn by turn, in the browser"),
+        "/set thoughts.enabled false stops recording it.",
     ]),
     ("Tools", [
         "Tab twice opens the tools pane: every tool, what its schema",

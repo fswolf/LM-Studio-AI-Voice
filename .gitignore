@@ -11,6 +11,9 @@ agent/facts.db
 agent/mood.json
 agent/facts.db-wal
 agent/facts.db-shm
+agent/thoughts.db
+agent/thoughts.db-wal
+agent/thoughts.db-shm
 
 # Screenshots and previews dropped here while working
 Claude outputs/

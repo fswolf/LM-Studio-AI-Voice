@@ -1,6 +1,7 @@
 import json
 import requests
 import re
+import time
 
 import state
 from datetime import datetime
@@ -183,7 +184,11 @@ def _chat_completion(payload, narrator=None):
 
     lmstudio.mark_worked()
 
-    return data["choices"][0]["message"]
+    message = data["choices"][0]["message"]
+    _note_thinking(message.get("content") if isinstance(message.get("content"), str)
+                   else "", _reasoning_field(message))
+
+    return message
 
 
 def _format_ts(when):
@@ -407,9 +412,63 @@ def _timing_note(messages):
 # What the last completion actually contained, so an empty reply can be
 # explained instead of apologised for.
 _last_raw = {"deltas": 0, "content": 0, "reasoning": 0, "tool_rounds": 0,
-             "called": set(), "exchanges": []}
+             "called": set(), "exchanges": [],
+             # The scratchpad, one entry per model run this turn:
+             # {"text": ..., "called": [tool names it went on to call]}.
+             # Reset by ask(), appended by _note_thinking, read by
+             # _record_thoughts. Per run rather than one buffer because
+             # a tool turn thinks twice, and the first time - deciding
+             # to call something - is the one worth reading.
+             "thinking": []}
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+_THINK_INNER = re.compile(r"<think>(.*?)</think>", re.IGNORECASE | re.DOTALL)
+_THINK_OPEN = re.compile(r"<think>", re.IGNORECASE)
+
+
+def _reasoning_field(part):
+    """The scratchpad field of a delta or a message, whatever the server
+    calls it: reasoning_content (LM Studio, llama.cpp, DeepSeek),
+    reasoning (some proxies), thinking (Ollama)."""
+    for key in ("reasoning_content", "reasoning", "thinking"):
+        value = part.get(key)
+
+        if isinstance(value, str) and value:
+            return value
+
+    return ""
+
+
+def _note_thinking(content, reasoning_field=""):
+    """Keep this run's scratchpad for the thought log.
+
+    Two places it can be: inside <think> tags in the content, or in a
+    separate reasoning_content field (LM Studio with reasoning parsing
+    on, and most other servers). Both are taken. An unclosed <think> -
+    the model hit max_tokens mid-thought - is kept too and marked,
+    since "ran out of room while thinking" is exactly what you want to
+    see when a reply came back empty.
+    """
+    content = content or ""
+    parts = [m.strip() for m in _THINK_INNER.findall(content) if m.strip()]
+
+    rest = _THINK_BLOCK.sub("", content)
+    opened = _THINK_OPEN.split(rest, maxsplit=1)
+
+    if len(opened) > 1 and opened[1].strip():
+        # Two ways a think block ends without closing, and they call for
+        # opposite fixes: HOME means nothing is wrong; max_tokens means
+        # generation.reasoning or max_tokens wants raising.
+        why = ("you pressed HOME" if state.stop_generating
+               else "the model ran out of tokens")
+        parts.append(f"{opened[1].strip()}\n\n[cut off - {why} before the "
+                     "think block closed]")
+
+    if reasoning_field and reasoning_field.strip():
+        parts.append(reasoning_field.strip())
+
+    if parts:
+        _last_raw["thinking"].append({"text": "\n\n".join(parts), "called": []})
 
 # A sentence ends at .!?… plus any closing quote or bracket, followed by
 # whitespace. Requiring the whitespace is what stops "3.5" and "e.g."
@@ -692,6 +751,7 @@ def _streamed_message(payload, narrator):
     arguments spread over many - and have to be reassembled by index.
     """
     calls = {}
+    reasoning = []
     _last_raw.update({"deltas": 0, "content": 0, "reasoning": 0})
 
     for delta in _stream_deltas(payload):
@@ -700,9 +760,13 @@ def _streamed_message(payload, narrator):
         # Some servers stream a reasoning model's scratchpad in its own
         # field rather than inside <think> tags. It is never spoken, but
         # knowing it arrived is the difference between "the model said
-        # nothing" and "the model thought and never concluded".
-        if delta.get("reasoning_content") or delta.get("reasoning"):
+        # nothing" and "the model thought and never concluded" - and
+        # the text itself goes to the thought log at the end.
+        piece = _reasoning_field(delta)
+
+        if piece:
             _last_raw["reasoning"] += 1
+            reasoning.append(piece)
 
         if delta.get("content"):
             _last_raw["content"] += 1
@@ -733,6 +797,9 @@ def _streamed_message(payload, narrator):
 
             if function.get("arguments"):
                 slot["function"]["arguments"] += function["arguments"]
+
+    # The screen and the speaker never see the think block; the log does.
+    _note_thinking(narrator.raw, "".join(reasoning))
 
     message = {"role": "assistant", "content": narrator.raw}
 
@@ -839,6 +906,15 @@ def _tool_rounds(payload, model, on_text=None, on_sentence=None):
             # but said nothing. One more attempt with tools removed.
             return _force_prose(payload, on_text, on_sentence) or ""
 
+        # The thinking that led here gets told what it decided. Only if
+        # this run actually thought - a run with no scratchpad added no
+        # entry, and the names would land on the previous round's.
+        if _last_raw["thinking"] and _last_raw["thinking"][-1].get("run") is None:
+            _last_raw["thinking"][-1]["run"] = _round
+            _last_raw["thinking"][-1]["called"] = [
+                _call_label(c.get("function") or {}) for c in calls
+            ]
+
         # Echo the assistant turn back verbatim - dropping it breaks the
         # pairing between tool_call_id and result.
         payload["messages"].append({
@@ -935,6 +1011,56 @@ def _why_empty():
     return "the model returned no usable text"
 
 
+def _call_label(function):
+    """get_datetime({}) as `get_datetime`, set_reminder(...) with its
+    arguments, cut short: what she decided is only half the story
+    without what she decided to ask for."""
+    name = function.get("name", "?")
+    args = " ".join(str(function.get("arguments") or "").split())
+
+    if args in ("", "{}"):
+        return name
+
+    return f"{name}({args[:90]}{'…' if len(args) > 90 else ''})"
+
+
+def _record_thoughts(user_text, answer, started, source=None):
+    """This turn's scratchpad, to the thought log.
+
+    Only called for turns that will be remembered, so stream chat and
+    IRC never contribute. Never raises: the log is for reading later,
+    and a failed write must not cost the reply in front of him now.
+    """
+    try:
+        import thoughtlog
+
+        rounds = _last_raw.get("thinking") or []
+
+        if not rounds:
+            return
+
+        # In the order they were called, with repeats, which is what the
+        # scratchpad will be talking about. _last_raw["called"] is a set.
+        called = [x["name"] for x in _last_raw.get("exchanges") or []]
+
+        try:
+            known = tools.names()
+        except Exception:
+            known = []
+
+        thoughtlog.record(
+            user_text, rounds, answer,
+            source=source or state.turn_source or "typed",
+            tools=called,
+            seconds=time.monotonic() - started,
+            mood=mood.bands(),
+            results=[x.get("result", "") for x in _last_raw.get("exchanges") or []],
+            known_tools=known,
+        )
+    except Exception:
+        logbook.exception("llm", "thought log write failed")
+
+
 def _generate(payload, on_text=None, on_sentence=None):
     """One completion, streamed or not depending on who's listening."""
     if on_text or on_sentence:
@@ -978,7 +1104,7 @@ def prompt_budget(text="hello"):
 
 
 def ask(text, model, on_text=None, on_sentence=None,
-        context=None, tools_allowed=None, remember=True):
+        context=None, tools_allowed=None, remember=True, source=None):
     """One turn. Returns the finished reply.
 
     on_text receives visible text as it streams, for the screen.
@@ -1001,10 +1127,16 @@ def ask(text, model, on_text=None, on_sentence=None,
                      replayed into a later prompt. Today proved how much
                      weight stored turns carry; a poisoned one would
                      carry the same.
+
+    source labels the turn in the thought log when it didn't come from
+    the keyboard or the mic - a reminder firing says "reminder". Left
+    None, it's whatever state.turn_source says.
     """
     global _tools_supported
 
     now = datetime.now()
+    started = time.monotonic()
+    _last_raw["thinking"] = []
 
     past = [] if context is not None else history.get_messages_full()
     messages = [{
@@ -1106,8 +1238,14 @@ def ask(text, model, on_text=None, on_sentence=None,
         logbook.warn("llm", "empty reply: %s | deltas=%s content=%s reasoning=%s rounds=%s",
                      reason, _last_raw.get("deltas"), _last_raw.get("content"),
                      _last_raw.get("reasoning"), _last_raw.get("tool_rounds"))
+        if _last_raw.get("thinking"):
+            reason += " - /thoughts shows what it was thinking"
+
         _log_tool_call("empty reply", reason)
         answer = "...sorry, I got tangled up there. Say that again?"
+
+    if remember:
+        _record_thoughts(text, answer, started, source)
 
     if not remember:
         # A turn from outside leaves nothing behind: not in history, not

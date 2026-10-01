@@ -1,5 +1,6 @@
 import warnings
 import os
+import sys
 
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -942,6 +943,33 @@ def handle_input(text):
                 wakeword.scores["detections"],
             ),
         )
+        return
+
+    if text == "/thoughts":
+        # One command, one job: open the page. Everything about reading
+        # her reasoning lives in the viewer, not here.
+        import socket
+        import subprocess
+        import webbrowser
+
+        import thoughtlog
+
+        url = "http://127.0.0.1:8791"
+
+        with socket.socket() as probe:
+            probe.settimeout(0.3)
+            live = probe.connect_ex(("127.0.0.1", 8791)) == 0
+
+        if live:
+            webbrowser.open(url)
+        else:
+            subprocess.Popen(
+                [sys.executable,
+                 os.path.join(config.BASE_DIR, "thought-viewer", "viewer.py")],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+
+        ui.add_message("system", f"{thoughtlog.summary()} - {url}")
         return
 
     if text == "/help":

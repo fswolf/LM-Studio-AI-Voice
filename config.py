@@ -455,6 +455,15 @@ LONG_TERM_MEMORY_CONTEXT_FACTS = _memory_cfg.get("context_facts", 25)
 # fall back, and nothing is lost in either direction.
 LONG_TERM_MEMORY_BACKEND = str(_memory_cfg.get("backend", "json"))
 
+# The reasoning log - see thoughtlog.py. Every turn from the keyboard
+# or the mic keeps the model's scratchpad (<think> blocks, or the
+# reasoning_content field) in agent/thoughts.db for review with
+# /thoughts. Capped by record count; the oldest go first.
+#   "thoughts": { "enabled": true, "max_records": 2000 }
+_thoughts_cfg = setting("thoughts", {})
+THOUGHTS_ENABLED = bool(_thoughts_cfg.get("enabled", True))
+THOUGHTS_MAX_RECORDS = int(_thoughts_cfg.get("max_records", 2000))
+
 # -------------------------
 # Tool calling
 # -------------------------
@@ -614,6 +623,9 @@ SETTINGS = {
     "long_term_memory.max_facts": ("LONG_TERM_MEMORY_MAX_FACTS",   True),
     "long_term_memory.context_facts": ("LONG_TERM_MEMORY_CONTEXT_FACTS", True),
     "long_term_memory.backend":   ("LONG_TERM_MEMORY_BACKEND",      True),
+
+    "thoughts.enabled":           ("THOUGHTS_ENABLED",             True),
+    "thoughts.max_records":       ("THOUGHTS_MAX_RECORDS",         True),
 }
 
 _TRUE = ("1", "true", "yes", "on", "y")

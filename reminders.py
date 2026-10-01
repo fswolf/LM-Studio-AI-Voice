@@ -602,7 +602,7 @@ def _deliver(model, texts, missed=False):
     )
 
     ui.set_status("Reminder due...")
-    answer = llm.ask(trigger, model)
+    answer = llm.ask(trigger, model, source="reminder")
     ui.add_message(AGENT_NAME.lower(), answer)
 
     if not state.stop_speaking:
