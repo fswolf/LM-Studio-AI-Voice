@@ -1,3 +1,4 @@
+import hashlib
 import json
 import requests
 import re
@@ -1024,7 +1025,8 @@ def _call_label(function):
     return f"{name}({args[:90]}{'…' if len(args) > 90 else ''})"
 
 
-def _record_thoughts(user_text, answer, started, source=None):
+def _record_thoughts(user_text, answer, started, source=None, model="",
+                     prompt_hash=""):
     """This turn's scratchpad, to the thought log.
 
     Only called for turns that will be remembered, so stream chat and
@@ -1056,6 +1058,9 @@ def _record_thoughts(user_text, answer, started, source=None):
             mood=mood.bands(),
             results=[x.get("result", "") for x in _last_raw.get("exchanges") or []],
             known_tools=known,
+            agent=AGENT_NAME,
+            model=model,
+            prompt_hash=prompt_hash,
         )
     except Exception:
         logbook.exception("llm", "thought log write failed")
@@ -1245,7 +1250,15 @@ def ask(text, model, on_text=None, on_sentence=None,
         answer = "...sorry, I got tangled up there. Say that again?"
 
     if remember:
-        _record_thoughts(text, answer, started, source)
+        # The hash is of the system prompt as sent, so a changed persona,
+        # rule or memory selection is a different hash - and a flag rate
+        # that moves can be lined up against the prompt that moved it.
+        _record_thoughts(
+            text, answer, started, source, model=payload.get("model", ""),
+            prompt_hash=hashlib.sha1(
+                messages[0]["content"].encode("utf-8", "replace")
+            ).hexdigest()[:12],
+        )
 
     if not remember:
         # A turn from outside leaves nothing behind: not in history, not

@@ -1879,7 +1879,12 @@ conversation now ends with `/thoughts shows what it was thinking`.
 What goes in the row: the thinking, the first 300 characters of what
 you said, the first 600 of what she said, the tools she called in the
 order she called them, how many rounds it took, how long the whole turn
-took, the mood she was in, and any flags from the review below. What
+took, the mood she was in, any flags from the review below — and who
+answered: the agent name, a session id minted when the app started,
+the model that was loaded, and a hash of the system prompt as sent.
+One assistant doesn't need those four; they are there so the database
+is already the right shape the day there are two, or the day a prompt
+change moves the flag rate and you want to know which change. What
 does not: tool *results* — they are looked at once, for errors, and
 dropped; that is where a file she read would land, and the files
 deny-list exists for a reason — and anything from stream chat or IRC. Those turns are
@@ -1920,11 +1925,25 @@ Along the top:
   | tool failed | a tool result that reads as an error, shown with its first line |
   | no answer | the "I got tangled up" fallback went out |
   | cut off | the think block never closed |
+  | broke character | the answer says "as an AI", "language model", "I don't have feelings" — the small-model regression that shows up when the context gets crowded |
 
   Each flag that has fired is a chip under the search box with its
   count; click one to see only those turns.
+
+  The checks that read *behaviour* — was a tool called, did the answer
+  hedge, did a result come back as an error — are stronger evidence
+  than the ones that read the *thinking*. A scratchpad is the model's
+  own account of itself, and models do things their stated reasoning
+  never mentions. Treat it as a witness statement; the tool calls and
+  arguments are the physical evidence. The checks are a list
+  (`thoughtlog.CHECKS`) and `review()` takes which to run and which
+  tools count as date tools, so another agent with a different tool
+  set or a different persona gets a review that fits it.
 * **filters** — all / used tools / voice / reminders / starred /
-  flagged, and a click on any day heading narrows to that day.
+  flagged, and a click on any day heading narrows to that day. Once
+  more than one model has answered, a row of model chips appears with
+  each one's turn count and flag rate — "which model lies less", as a
+  number from your own turns — and clicking one filters to it.
   *Flagged* is the one to have open after a stream; the *cut off* flag
   chip is the one for tuning `max_tokens`.
 * **★ and a note** on each turn. Star the ones worth coming back to —

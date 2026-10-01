@@ -77,7 +77,7 @@ class Handler(BaseHTTPRequestHandler):
         elif url.path == "/api/rows":
             log = _log()
             where = dict(search=arg("q"), kind=arg("kind"), flag=arg("flag"),
-                         day=arg("day"))
+                         day=arg("day"), model=arg("model"))
             offset = max(0, int(arg("offset") or 0))
             self._send(200, json.dumps({
                 "total": log.count(**where),
@@ -166,6 +166,9 @@ PAGE = r"""<!DOCTYPE html>
   #flagchips button.on { color: var(--danger); border-color: var(--danger); }
   #flagchips button i { font-style: normal; color: var(--dim); margin-left: 4px; }
   #daychip { color: var(--cyan); border-color: #3f6b6b; }
+  #models button i { font-style: normal; color: var(--dim); margin-left: 5px; }
+  #models button.on { color: var(--cyan); border-color: #3f6b6b; }
+  .pill.model { color: var(--dim); font-family: ui-monospace, monospace; font-size: 10px; }
 
   /* ---- two panes ---- */
   main { flex: 1; display: grid; grid-template-columns: 400px 1fr; min-height: 0; }
@@ -266,6 +269,7 @@ PAGE = r"""<!DOCTYPE html>
     <button class="danger" onclick="clearAll()">clear</button>
   </div>
   <div class="row" id="flagchips" style="margin-top:8px"></div>
+  <div class="row" id="models" style="margin-top:8px"></div>
 </header>
 
 <main>
@@ -276,7 +280,7 @@ PAGE = r"""<!DOCTYPE html>
 
 <script>
 const $ = id => document.getElementById(id);
-const S = {offset: 0, total: 0, pageSize: 40, q: "", kind: "", flag: "", day: "",
+const S = {offset: 0, total: 0, pageSize: 40, q: "", kind: "", flag: "", day: "", model: "",
            live: true, sel: null, rows: [], budget: 0, newest: -1, timer: null};
 
 function flash(msg, bad) {
@@ -321,13 +325,13 @@ function dayLabel(ts) {
 
 // ---- loading ----
 async function load(quiet) {
-  const p = new URLSearchParams({offset: S.offset, kind: S.kind, flag: S.flag, day: S.day});
+  const p = new URLSearchParams({offset: S.offset, kind: S.kind, flag: S.flag, day: S.day, model: S.model});
   if (S.q) p.set("q", S.q);
   const d = await fetch("/api/rows?" + p).then(r => r.json());
   const top = d.rows.length ? d.rows[0].id : 0;
   if (quiet && top === S.newest && d.total === S.total) return;
   S.newest = top; S.total = d.total; S.pageSize = d.page_size; S.budget = d.budget; S.rows = d.rows;
-  meta(d); flagChips(d.stats); list();
+  meta(d); flagChips(d.stats); modelChips(d.stats); list();
   if (S.sel == null && d.rows.length && !quiet) select(d.rows[0].id, true);
   else if (S.sel != null) {
     const r = d.rows.find(x => x.id === S.sel);
@@ -339,7 +343,7 @@ function meta(d) {
   const st = d.stats, pct = st.total ? Math.round(100 * st.cut_off / st.total) : 0;
   $("meta").innerHTML =
     `${st.total} turn${st.total === 1 ? "" : "s"}` +
-    ((S.q || S.kind || S.flag || S.day) ? ` · ${S.total} shown` : "") +
+    ((S.q || S.kind || S.flag || S.day || S.model) ? ` · ${S.total} shown` : "") +
     (st.total ? ` · median ${k(st.chars)} chars${st.seconds ? `, ${st.seconds}s` : ""} · ${st.tools} used tools` : "") +
     (st.flagged ? ` · <span class="warn">${st.flagged} flagged</span>` : "") +
     (st.cut_off ? ` · <span class="${pct >= 15 ? "warn" : ""}">${st.cut_off} cut off (${pct}%)${pct >= 15 ? " - raise max_tokens or lower generation.reasoning" : ""}</span>` : "") +
@@ -359,6 +363,30 @@ function flagChips(st) {
     b.onclick = () => { S.flag = S.flag === code ? "" : code; S.offset = 0; S.sel = null; load(); };
     box.appendChild(b);
   }
+}
+
+function modelChips(st) {
+  // Only once there's a comparison to make. One model is a fact, not a
+  // breakdown; two is "which one lies less", as a number from your own turns.
+  const box = $("models"); box.replaceChildren();
+  const ms = st.by_model || [];
+  if (ms.length < 2) { box.style.display = "none"; return; }
+  box.style.display = "";
+  box.appendChild(el("span", null, "models:")).style.cssText = "color:var(--dim);font-size:12px";
+  for (const m of ms) {
+    const pct = m.total ? Math.round(100 * m.flagged / m.total) : 0;
+    const b = el("button", S.model === m.model ? "on" : "", shortModel(m.model));
+    b.title = m.model;
+    b.appendChild(el("i", null, `${m.total} turns, ${pct}% flagged`));
+    b.onclick = () => { S.model = S.model === m.model ? "" : m.model; S.offset = 0; S.sel = null; load(); };
+    box.appendChild(b);
+  }
+}
+function shortModel(m) {
+  // "qwen3.5-9b-the-defiant-fable-uncensored-heretic-neo-imatrix-max-mtp" is
+  // not a chip. Keep the family and the size.
+  const s = (m || "(unknown)").replace(/^.*\//, "");
+  return s.length > 28 ? s.slice(0, 26) + "…" : s;
 }
 
 // ---- the list ----
@@ -420,7 +448,8 @@ function detail(r) {
     d.appendChild(el("div", "hint",
       "Pick a turn on the left. Keys: j / k move, s stars, n jumps to the note, " +
       "/ searches, Esc clears, [ ] page. Click a day heading to see only that day; " +
-      "click a flag above to see only turns with it."));
+      "click a flag above to see only turns with it. Hover the model pill on a turn " +
+      "for its prompt hash and session."));
     return;
   }
   const head = el("div", "dhead");
@@ -436,6 +465,7 @@ function detail(r) {
   head.appendChild(tp);
   if (r.seconds) head.appendChild(el("span", "pill", r.seconds + "s"));
   if (r.rounds > 1) head.appendChild(el("span", "pill", r.rounds + " rounds"));
+  if (r.model) { const mp = el("span", "pill model", shortModel(r.model)); mp.title = `${r.model} · prompt ${r.prompt_hash || "?"} · session ${r.session || "?"}`; head.appendChild(mp); }
   head.appendChild(el("span", "sp"));
   const back = el("button", null, "← list"); back.id = "back";
   back.onclick = () => document.body.classList.remove("showing"); head.appendChild(back);
@@ -524,7 +554,7 @@ async function clearAll() {
 function toggleLive() { S.live = !S.live; document.querySelector("button.live").classList.toggle("on", S.live); schedule(); }
 function schedule() {
   clearInterval(S.timer);
-  if (S.live) S.timer = setInterval(() => { if (!S.offset && !S.q && !S.kind && !S.flag && !S.day) load(true); }, 4000);
+  if (S.live) S.timer = setInterval(() => { if (!S.offset && !S.q && !S.kind && !S.flag && !S.day && !S.model) load(true); }, 4000);
 }
 for (const b of document.querySelectorAll("#kindchips button")) b.onclick = () => {
   S.kind = b.dataset.kind; S.offset = 0; S.sel = null;

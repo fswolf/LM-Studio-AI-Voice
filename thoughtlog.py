@@ -39,10 +39,19 @@ _lock = threading.Lock()
 _COLUMNS = (
     "id", "timestamp", "source", "user_text", "reasoning", "answer",
     "tools", "rounds", "seconds", "mood_e", "mood_w", "starred", "note",
-    "flags",
+    "flags", "agent", "session", "model", "prompt_hash",
 )
 
 FALLBACK_ANSWER = "...sorry, I got tangled up there. Say that again?"
+
+# One id per process, minted at import. Every row written by this run
+# carries it, so a session can be told apart from the one before it
+# even when they're ten minutes apart on the same day.
+SESSION = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def session_id():
+    return SESSION
 
 
 def _conn():
@@ -70,8 +79,11 @@ def _conn():
     have = {row[1] for row in conn.execute("PRAGMA table_info(thoughts)")}
 
     for column, kind in (("tools", "TEXT"), ("rounds", "INTEGER"),
-                         ("seconds", "REAL"), ("starred", "INTEGER DEFAULT 0"),
-                         ("note", "TEXT DEFAULT ''"), ("flags", "TEXT DEFAULT '[]'")):
+                         ("seconds", "REAL"), ("mood_e", "TEXT DEFAULT ''"),
+                         ("mood_w", "TEXT DEFAULT ''"), ("starred", "INTEGER DEFAULT 0"),
+                         ("note", "TEXT DEFAULT ''"), ("flags", "TEXT DEFAULT '[]'"),
+                         ("agent", "TEXT DEFAULT ''"), ("session", "TEXT DEFAULT ''"),
+                         ("model", "TEXT DEFAULT ''"), ("prompt_hash", "TEXT DEFAULT ''")):
         if column not in have:
             conn.execute(f"ALTER TABLE thoughts ADD COLUMN {column} {kind}")
 
@@ -104,7 +116,8 @@ def enabled():
 # Writing
 # ---------------------------------------------------------------------------
 def record(user_text, rounds, answer, source="typed", tools=(),
-           seconds=0.0, mood=("", ""), results=(), known_tools=()):
+           seconds=0.0, mood=("", ""), results=(), known_tools=(),
+           agent="", model="", prompt_hash="", checks=None):
     """One turn. `rounds` is a list of {"text": ..., "called": [...]} in
     the order the model ran, from llm._record_thoughts. Nothing is
     stored for a turn with no reasoning in it.
@@ -112,7 +125,12 @@ def record(user_text, rounds, answer, source="typed", tools=(),
     `results` are the tool results of the turn, looked at for errors
     and then dropped - they are not stored. `known_tools` is every
     tool she could have called, for spotting the ones she only talked
-    about calling."""
+    about calling.
+
+    agent, model and prompt_hash are who answered, with what, having
+    been shown which system prompt. One assistant doesn't need them;
+    the day there are several, or one prompt is changed and the flag
+    rate moves, they are the only way to say which."""
     if not enabled():
         return
 
@@ -123,17 +141,20 @@ def record(user_text, rounds, answer, source="typed", tools=(),
 
     reasoning = _join(rounds)
     names = [str(t) for t in tools or ()]
-    flags = review(reasoning, str(answer or ""), names, results, known_tools)
+    flags = review(reasoning, str(answer or ""), names, results, known_tools,
+                   checks=checks)
 
     def write(conn):
         conn.execute(
             "INSERT INTO thoughts (timestamp, source, user_text, reasoning, "
-            "answer, tools, rounds, seconds, mood_e, mood_w, flags) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "answer, tools, rounds, seconds, mood_e, mood_w, flags, "
+            "agent, session, model, prompt_hash) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (datetime.now().isoformat(timespec="seconds"), source,
              str(user_text or "")[:300], reasoning, str(answer or "")[:600],
              json.dumps(names), len(rounds), round(float(seconds or 0), 1),
-             mood[0], mood[1], json.dumps(flags)),
+             mood[0], mood[1], json.dumps(flags),
+             str(agent or ""), SESSION, str(model or ""), str(prompt_hash or "")),
         )
         _trim(conn)
         conn.commit()
@@ -219,8 +240,12 @@ _KINDS = {
 }
 
 
-def _where(search, kind="", flag="", day=""):
+def _where(search, kind="", flag="", day="", model=""):
     terms, params = [], ()
+
+    if model:
+        terms.append("model = ?")
+        params += (model,)
 
     if search:
         like = f"%{search}%"
@@ -242,9 +267,9 @@ def _where(search, kind="", flag="", day=""):
     return (" WHERE " + " AND ".join(terms) if terms else ""), params
 
 
-def rows(limit=50, offset=0, search="", kind="", flag="", day=""):
+def rows(limit=50, offset=0, search="", kind="", flag="", day="", model=""):
     """Newest first, as dicts. tools and flags come back as lists."""
-    clause, params = _where(search, kind, flag, day)
+    clause, params = _where(search, kind, flag, day, model)
 
     def read(conn):
         cur = conn.execute(
@@ -276,8 +301,8 @@ def rows(limit=50, offset=0, search="", kind="", flag="", day=""):
     return _run(read, [])
 
 
-def count(search="", kind="", flag="", day=""):
-    clause, params = _where(search, kind, flag, day)
+def count(search="", kind="", flag="", day="", model=""):
+    clause, params = _where(search, kind, flag, day, model)
 
     return _run(lambda c: c.execute(
         f"SELECT COUNT(*) FROM thoughts{clause}", params
@@ -317,6 +342,13 @@ def stats():
             except ValueError:
                 continue
 
+        by_model = [
+            {"model": m or "(unknown)", "total": n, "flagged": f}
+            for m, n, f in conn.execute(
+                "SELECT model, COUNT(*), SUM(flags != '[]') FROM thoughts "
+                "GROUP BY model ORDER BY COUNT(*) DESC"
+            )
+        ]
         days = conn.execute(
             "SELECT substr(timestamp, 1, 10) AS d, COUNT(*) FROM thoughts "
             "GROUP BY d ORDER BY d DESC LIMIT 60"
@@ -334,13 +366,15 @@ def stats():
             "tools": tools,
             "flagged": flagged,
             "by_flag": by_flag,
+            "by_model": by_model,
             "days": days,
             "chars": lengths[len(lengths) // 2],
             "seconds": times[len(times) // 2] if times else 0,
         }
 
     return _run(read, {"total": 0, "cut_off": 0, "tools": 0, "flagged": 0,
-                       "by_flag": {}, "days": [], "chars": 0, "seconds": 0})
+                       "by_flag": {}, "by_model": [], "days": [],
+                       "chars": 0, "seconds": 0})
 
 
 # ---------------------------------------------------------------------------
@@ -377,40 +411,63 @@ _TOOL_ERROR = re.compile(
     r"^\s*(error|denied|failed|couldn't|could not|can't|cannot|unable|"
     r"no (results?|such)|not found|timed? ?out|refused)\b", re.IGNORECASE,
 )
+_OUT_OF_CHARACTER = re.compile(
+    r"\b(as an ai\b|(large )?language model|i('m| am) (just )?an? (ai|assistant|"
+    r"program)\b|i (don't|do not) have (feelings|emotions|a body|personal))",
+    re.IGNORECASE,
+)
 _WORD = re.compile(r"[a-z][a-z0-9_]+")
 
+# The checks, by name, so an agent can say which apply to it. Luna
+# gets all of them; an agent with no date tools would drop "date math",
+# one that is meant to sound like an assistant would drop "broke
+# character". Each is (what it reads, what it says) - the ones that
+# read behaviour (was a tool called, did the answer hedge) are stronger
+# evidence than the ones that read the thinking, which is the model's
+# own account of itself and not always a faithful one.
+CHECKS = ("promised a tool", "guessed", "date math", "leaked", "tool failed",
+          "no answer", "cut off", "broke character")
 
-def review(reasoning, answer, called, results=(), known_tools=()):
+
+def review(reasoning, answer, called, results=(), known_tools=(),
+           checks=None, date_tools=_DATE_TOOLS, fallback=FALLBACK_ANSWER):
     """Flags for one turn, as "code: detail" strings. Empty is good."""
+    on = set(CHECKS if checks is None else checks)
     flags = []
     called = set(called or ())
     body = _HEADING.sub("", reasoning)
     mentioned = set(_WORD.findall(body.lower())) & set(known_tools or ())
 
-    for name in sorted(mentioned - called):
-        flags.append(f"promised a tool: talked about {name} and never called it")
+    if "promised a tool" in on:
+        for name in sorted(mentioned - called):
+            flags.append(f"promised a tool: talked about {name} and never called it")
 
-    if not called and _UNSURE.search(body) and not _HEDGED.search(answer):
+    if ("guessed" in on and not called and _UNSURE.search(body)
+            and not _HEDGED.search(answer)):
         flags.append("guessed: the thinking admits it doesn't know, no tool "
                      "was called, and the answer doesn't say so")
 
-    if _DATE_MATH.search(body) and not (called & _DATE_TOOLS):
+    if "date math" in on and _DATE_MATH.search(body) and not (called & set(date_tools)):
         flags.append("did date math: worked out a date or duration itself "
-                     "instead of calling get_datetime or time_until")
+                     f"instead of calling {' or '.join(sorted(date_tools))}")
 
-    if "<think" in answer.lower() or _SCRATCH_OPENING.match(answer):
+    if "leaked" in on and ("<think" in answer.lower() or _SCRATCH_OPENING.match(answer)):
         flags.append("leaked: the answer reads like the scratchpad, not a reply")
 
-    for result in results or ():
-        if _TOOL_ERROR.match(str(result or "")):
-            flags.append(f"tool failed: {str(result).strip()[:90]}")
-            break
+    if "tool failed" in on:
+        for result in results or ():
+            if _TOOL_ERROR.match(str(result or "")):
+                flags.append(f"tool failed: {str(result).strip()[:90]}")
+                break
 
-    if answer.strip() == FALLBACK_ANSWER:
+    if "no answer" in on and answer.strip() == fallback:
         flags.append("no answer: nothing usable came back after the thinking")
 
-    if "[cut off - " in reasoning:
+    if "cut off" in on and "[cut off - " in reasoning:
         flags.append("cut off: the think block never closed")
+
+    if "broke character" in on and (m := _OUT_OF_CHARACTER.search(answer)):
+        flags.append(f"broke character: the answer says \"{m.group(0)}\"")
 
     return flags
 
