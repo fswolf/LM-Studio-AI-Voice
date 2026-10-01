@@ -714,6 +714,24 @@ _FEATURES = (
     ("warmth sensing", "MOOD_AFFECTION", "mood.affection", "1 call/turn"),
 )
 
+# Costs nothing in context - it records what the model already produced
+# - so it carries no token figure, just what it does.
+_THOUGHT_FEATURES = (
+    ("reasoning log", "THOUGHTS_ENABLED", "thoughts.enabled", "/thoughts to read"),
+)
+
+
+def _thoughts_group():
+    try:
+        import config
+    except Exception:
+        return None
+
+    members = [(label, bool(getattr(config, key, False)), True, note, 0, path)
+               for label, key, path, note in _THOUGHT_FEATURES]
+
+    return ("Thoughts", members, 0, 0)
+
 
 def _feature_group():
     """The Mood group: same shape as a tool group, so the cursor, the
@@ -755,9 +773,9 @@ def _tool_groups():
     except Exception:
         groups = []
 
-    features = _feature_group()
+    extra = [g for g in (_feature_group(), _thoughts_group()) if g]
 
-    return groups + [features] if features else groups
+    return groups + extra
 
 
 def _tool_rows():
@@ -961,9 +979,10 @@ def _tool_toggle():
 
             # The mood line leaves the prompt with it, and the header
             # row goes with it too.
-            import mood
+            if setting.startswith("mood."):
+                import mood
 
-            mood._announce()
+                mood._announce()
         else:
             import tools
 
@@ -1375,7 +1394,8 @@ _HELP_SECTIONS = [
         "",
         "in the tools pane: up/down or the wheel choose, space toggles.",
         "the Mood group at the bottom switches moods, her voice tint",
-        "and warmth sensing from the same place.",
+        "and warmth sensing from the same place; Thoughts switches the",
+        "reasoning log.",
         "the pane grabs the mouse while it's open so one notch is one",
         "option - F2 and text selection go back to normal on the way out.",
         ("/mouse", "same as F2, and saves the choice"),

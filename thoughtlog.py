@@ -108,8 +108,46 @@ def _run(what, default):
         return default
 
 
+CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+_seen = [None]
+
+
 def enabled():
+    """Whether turns are being recorded.
+
+    Three places can flip this - /set, the settings pane, and the
+    viewer's own switch - and the viewer is a different process. So the
+    switch lives where all three can reach it, thoughts.enabled in
+    config.json, and this re-reads it whenever the file has changed
+    since last time. One stat() per turn; the file is only parsed when
+    something actually wrote to it.
+    """
+    try:
+        stamp = os.path.getmtime(CONFIG_FILE)
+    except OSError:
+        stamp = None
+
+    if stamp is not None and stamp != _seen[0]:
+        _seen[0] = stamp
+
+        try:
+            with open(CONFIG_FILE) as f:
+                block = json.load(f).get("thoughts", {})
+
+            if isinstance(block, dict) and "enabled" in block:
+                config.THOUGHTS_ENABLED = bool(block["enabled"])
+        except Exception:
+            pass  # a half-written or broken file keeps the last answer
+
     return bool(getattr(config, "THOUGHTS_ENABLED", True))
+
+
+def set_enabled(on):
+    """Flip it from outside the assistant - the viewer's switch. Saved
+    the same way /set saves it, so the running app picks it up on its
+    next turn and it survives a restart."""
+    config.save_setting("thoughts.enabled", "true" if on else "false")
+    _seen[0] = None
 
 
 # ---------------------------------------------------------------------------

@@ -110,6 +110,8 @@ class Handler(BaseHTTPRequestHandler):
                 log.star(int(body["id"]), bool(body.get("on", True)))
             elif action == "note":
                 log.set_note(int(body["id"]), body.get("note", ""))
+            elif action == "recording":
+                log.set_enabled(bool(body.get("on")))
             else:
                 raise ValueError(f"unknown action {action!r}")
 
@@ -144,6 +146,10 @@ PAGE = r"""<!DOCTYPE html>
   button:hover { color: var(--text); border-color: var(--accent-dim); }
   button.on { color: var(--accent); border-color: var(--accent-dim); }
   button.live.on { color: var(--ok); border-color: var(--ok); }
+  #rec { display: inline-flex; align-items: center; gap: 6px; }
+  #rec .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+  #rec.on { color: var(--danger); border-color: #6a3a55; }
+  #rec.on .dot { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
   button.danger:hover { color: var(--danger); border-color: var(--danger); }
   button:disabled { opacity: .3; cursor: default; }
   mark { background: #5a4a1a; color: #ffe9a0; border-radius: 2px; }
@@ -264,6 +270,7 @@ PAGE = r"""<!DOCTYPE html>
       <button data-kind="flagged">flagged</button>
     </span>
     <button id="daychip" style="display:none" onclick="setDay('')"></button>
+    <button id="rec" onclick="toggleRecording()" title="record her reasoning - saved to config.json, same as /set thoughts.enabled"><span class="dot"></span><span id="rectext">recording</span></button>
     <button class="live on" onclick="toggleLive()" title="refresh as new turns arrive">live</button>
     <a href="/api/export" download><button>export</button></a>
     <button class="danger" onclick="clearAll()">clear</button>
@@ -347,7 +354,10 @@ function meta(d) {
     (st.total ? ` · median ${k(st.chars)} chars${st.seconds ? `, ${st.seconds}s` : ""} · ${st.tools} used tools` : "") +
     (st.flagged ? ` · <span class="warn">${st.flagged} flagged</span>` : "") +
     (st.cut_off ? ` · <span class="${pct >= 15 ? "warn" : ""}">${st.cut_off} cut off (${pct}%)${pct >= 15 ? " - raise max_tokens or lower generation.reasoning" : ""}</span>` : "") +
-    (d.enabled ? "" : ` · <span class="off">recording is off - /set thoughts.enabled true</span>`);
+    (d.enabled ? "" : ` · <span class="off">not recording - new turns aren't being kept</span>`);
+  S.enabled = d.enabled;
+  $("rec").classList.toggle("on", d.enabled);
+  $("rectext").textContent = d.enabled ? "recording" : "paused";
   const dc = $("daychip");
   dc.style.display = S.day ? "" : "none";
   dc.textContent = S.day ? `${dayLabel(S.day + "T12:00")} ✕` : "";
@@ -551,6 +561,14 @@ async function clearAll() {
   if (!confirm("Delete every recorded turn except the starred ones?\n\n(Unstar first if you want those gone too.)")) return;
   await api("clear", {keep_starred: true}); S.sel = null; S.offset = 0; S.newest = -1; flash("cleared"); load();
 }
+async function toggleRecording() {
+  const on = !S.enabled;
+  if (!on && !confirm("Stop recording her reasoning?\n\nWhat's already here stays. Turns from now on won't be kept until you switch it back on.")) return;
+  await api("recording", {on});
+  flash(on ? "recording" : "paused");
+  S.newest = -1; load();
+}
+
 function toggleLive() { S.live = !S.live; document.querySelector("button.live").classList.toggle("on", S.live); schedule(); }
 function schedule() {
   clearInterval(S.timer);
